@@ -1,0 +1,17 @@
+{
+  "name": "claimflow-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=20 <23" },
+  "scripts": {
+    "lint": "npm --prefix .. run lint",
+    "test": "npm --prefix .. run test:unit",
+    "build": "npm --prefix .. run build"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2",
+    "vite": "^6.0.0",
+    "vitest": "^3.2.7"
+  }
+}
