@@ -45,6 +45,8 @@ npm start
 
 Never commit `.env`; it is git-ignored. `npm start` runs preflight, migrates, seeds, then starts Mailpit, the API and the web app. When it prints `Ready`, all 3 services are healthy.
 
+Stop with Ctrl-C (SIGINT; SIGTERM and SIGHUP behave the same): every service the command started is stopped and it exits 0. During the migrate/seed steps, which run synchronously before any service starts, a signal sent only to the `npm start` process waits for the step to finish; Ctrl-C in a terminal also reaches the step and aborts it.
+
 ## Ports
 
 | Port | Service |

@@ -25,6 +25,10 @@ const external = process.env.MAILPIT_EXTERNAL === '1';
 const bin = (n) => `node_modules/.bin/${n}`;
 const env = { ...process.env, NODE_ENV: process.env.NODE_ENV === 'production' ? 'production' : 'development' };
 
+// A closed terminal makes stdout/stderr writes fail (EIO/EPIPE); that must never abort teardown.
+for (const s of [process.stdout, process.stderr]) s.on('error', () => {});
+
+// Signals sent to this process during migrate/seed are deferred until the step returns (README).
 function step(cmd, args) {
   const r = spawnSync(cmd, args, { env, stdio: 'inherit' });
   if (r.status !== 0) process.exit(r.status || 1);
@@ -44,10 +48,12 @@ const children = [
   return p;
 });
 
+// Only this launch's own child process groups; a group already gone is never signalled again.
+const alive = (p) => { try { return process.kill(-p.pid, 0); } catch { return false; } };
 function kill(sig) {
-  for (const p of children) try { process.kill(-p.pid, sig); } catch {}
+  for (const p of children) if (alive(p)) try { process.kill(-p.pid, sig); } catch {}
 }
-const groupAlive = () => children.some((p) => { try { return process.kill(-p.pid, 0); } catch { return false; } });
+const groupAlive = () => children.some(alive);
 
 // SIGTERM every child process group, wait up to 5 s for them to vanish, then SIGKILL.
 async function stop(code, msg) {
