@@ -47,7 +47,10 @@ test('AC-1/4/5: cold start, re-run idempotent, test routes absent', { skip: !has
   };
   for (const round of [1, 2]) {
     if (round === 1) rmSync('node_modules/.vite', { recursive: true, force: true });
-    const proc = spawn('npm', ['start', '--silent'], { env: run(envPath), detached: true, stdio: 'ignore' });
+    const proc = spawn('npm', ['start', '--silent'], { env: run(envPath), detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    proc.stdout!.on('data', (d) => (out += d)); proc.stderr!.on('data', (d) => (out += d));
+    const exited = new Promise((r) => proc.once('exit', r));
     try {
       const t0 = Date.now();
       let ok = false;
@@ -55,16 +58,17 @@ test('AC-1/4/5: cold start, re-run idempotent, test routes absent', { skip: !has
         ok = await Promise.all(['5173/', '3001/health', '8025/'].map((u) => fetch(`http://127.0.0.1:${u}`).then((r) => r.ok, () => false))).then((a) => a.every(Boolean));
         if (!ok) await sleep(250);
       }
-      assert.ok(ok, 'services reachable within 60 s');
+      assert.ok(ok, `services reachable within 60 s\n${out}`);
       assert.deepEqual(await (await fetch('http://127.0.0.1:3001/health')).json(), { status: 'ok' });
       assert.match(await (await fetch('http://127.0.0.1:5173/')).text(), /id="root"/);
       assert.equal(await count(), 5);
       assert.equal((await fetch('http://127.0.0.1:3001/__test/echo', { method: 'POST' })).status, 404);
       assert.equal((await fetch('http://127.0.0.1:3001/__test/error')).status, 404);
     } finally {
-      try { process.kill(-proc.pid!, 'SIGTERM'); } catch {}
-      spawnSync('pkill', ['-f', 'node_modules/.bin/(vite|tsx)|mailpit']);
-      await sleep(1500);
+      // only the process group this test spawned; start.mjs tears down its own children
+      try { process.kill(-proc.pid!, 'SIGINT'); } catch {}
+      await Promise.race([exited, sleep(10_000)]);
+      try { process.kill(-proc.pid!, 'SIGKILL'); } catch {}
     }
   }
   assert.ok(existsSync(dbPath));

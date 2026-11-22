@@ -9,6 +9,8 @@ if (!nodeVersionOk(process.versions.node)) {
   process.exit(1);
 }
 
+// Empty string == unset (FR-3), so it must not block dotenv's non-overriding load.
+for (const k of Object.keys(process.env)) if (process.env[k] === '') delete process.env[k];
 const { default: dotenv } = await import('dotenv');
 dotenv.config({ path: process.env.DOTENV_CONFIG_PATH ?? '.env', quiet: true, override: false });
 
@@ -70,8 +72,8 @@ const deadline = Date.now() + (Number(process.env.START_TIMEOUT_MS) || 60000);
 const services = [[5173, 'web'], [3001, 'api'], [8025, 'mailpit'], [1025, 'mailpit']];
 for (const [port, name] of services) {
   while (!stopping && !(await up(port))) {
-    if (Date.now() > deadline) await stop(1, `${name} not ready on port ${port} within START_TIMEOUT_MS`);
     await new Promise((r) => setTimeout(r, 250));
+    if (Date.now() > deadline) await stop(1, `${name} not ready on port ${port} within START_TIMEOUT_MS`);
   }
 }
 if (!stopping) console.log('Ready: web http://localhost:5173, api http://localhost:3001, mailpit http://localhost:8025');
