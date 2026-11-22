@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import http from 'node:http';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -92,4 +93,31 @@ test('AC-1/4/5: cold start, re-run idempotent, test routes absent', async () => 
     }
   }
   assert.ok(existsSync(dbPath));
+});
+
+test('F-005: an HTTP 503 Mailpit UI listener is never reported Ready', async () => {
+  // stub answers 200 once (external-mode preflight), then 503 for every readiness probe
+  let hits = 0;
+  const ui = http.createServer((_q, res) => res.writeHead(hits++ ? 503 : 200).end());
+  const smtp = net.createServer((s) => s.destroy());
+  await Promise.all([new Promise<void>((r) => ui.listen(8025, '127.0.0.1', r)), new Promise<void>((r) => smtp.listen(1025, '127.0.0.1', r))]);
+  const dbPath = join(mkdtempSync(join(tmpdir(), 'db-')), 'c.db');
+  const envPath = envFile([...base(dbPath), 'SEED_PASSWORD=e2e-seed-pw']);
+  try {
+    // async spawn: spawnSync would block this process's event loop and starve the stub listeners
+    const child = spawn('sh', ['-c', 'npm start --silent 2>&1'], {
+      env: run(envPath, { MAILPIT_EXTERNAL: '1', START_TIMEOUT_MS: '30000' }), detached: true, stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    let stdout = '';
+    child.stdout!.on('data', (d) => (stdout += d));
+    const exited = new Promise<number | null>((r) => child.once('exit', r));
+    const status = await Promise.race([exited, sleep(90_000).then(() => 'timeout' as const)]);
+    if (status === 'timeout') try { process.kill(-child.pid!, 'SIGKILL'); } catch {}
+    const r = { status, stdout };
+    assert.notEqual(r.status, 0, r.stdout);
+    assert.match(r.stdout, /mailpit not ready on port 8025/);
+    assert.doesNotMatch(r.stdout, /Ready:/);
+  } finally {
+    ui.close(); smtp.close();
+  }
 });

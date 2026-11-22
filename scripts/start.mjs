@@ -69,11 +69,21 @@ const up = (port) => new Promise((ok) => {
   const s = net.connect(port, '127.0.0.1').once('connect', () => (s.destroy(), ok(true))).once('error', () => ok(false));
 });
 const deadline = Date.now() + (Number(process.env.START_TIMEOUT_MS) || 60000);
-const services = [[5173, 'web'], [3001, 'api'], [8025, 'mailpit'], [1025, 'mailpit']];
-for (const [port, name] of services) {
-  while (!stopping && !(await up(port))) {
+// Ready == HTTP 200 (API /health, web /, Mailpit UI /) plus SMTP accepting TCP on 1025.
+const http200 = (url) => fetch(url, { signal: AbortSignal.timeout(Math.max(1, Math.min(2000, deadline - Date.now()))) })
+  .then((r) => r.status === 200, () => false);
+const services = [
+  ['web', 5173, () => http200('http://127.0.0.1:5173/')],
+  ['api', 3001, () => http200('http://127.0.0.1:3001/health')],
+  ['mailpit', 8025, () => http200('http://127.0.0.1:8025/')],
+  ['mailpit', 1025, () => up(1025)],
+];
+for (const [name, port, probe] of services) {
+  while (!stopping && !(await probe())) {
     await new Promise((r) => setTimeout(r, 250));
     if (Date.now() > deadline) await stop(1, `${name} not ready on port ${port} within START_TIMEOUT_MS`);
   }
+  // A probe that turns healthy late must still honour the single overall deadline.
+  if (!stopping && Date.now() > deadline) await stop(1, `${name} not ready on port ${port} within START_TIMEOUT_MS`);
 }
 if (!stopping) console.log('Ready: web http://localhost:5173, api http://localhost:3001, mailpit http://localhost:8025');
