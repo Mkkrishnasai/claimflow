@@ -43,6 +43,6 @@ jobs:
       - name: Secret scan (working tree)
         run: gitleaks detect --no-git --source . --config .gitleaks.toml --no-banner --redact
       - name: Secret scan (history)
-        run: gitleaks detect --source . --config .gitleaks.toml --no-banner --redact
+        run: gitleaks detect --source . --config .gitleaks-history.toml --no-banner --redact
       - name: Seed password not committed
         run: "! git ls-files -z | xargs -0 grep -lF -- \"$SEED_PASSWORD\""
