@@ -28,7 +28,7 @@ test('AC-1 migrate deploy is idempotent', () => {
   assert.match(r.stdout, /No pending migrations/);
 });
 
-test('AC-2/4 seed creates exact hierarchy with cost-10 hashes', async () => {
+test('AC-2/4 seed creates exact hierarchy with cost-12 hashes', async () => {
   assert.equal(seed(baseEnv).status, 0);
   const p = db();
   const users = await p.user.findMany();
@@ -44,7 +44,7 @@ test('AC-2/4 seed creates exact hierarchy with cost-10 hashes', async () => {
   assert.equal(by['finance@claimflow.test'].managerId, sm.id);
   assert.equal(by['admin@claimflow.test'].managerId, sm.id);
   for (const u of users) {
-    assert.match(u.passwordHash, /^\$2[aby]\$10\$/);
+    assert.match(u.passwordHash, /^\$2[aby]\$12\$/);
     assert.ok(await bcrypt.compare(PW, u.passwordHash));
   }
   for (const f of ['seed.ts', 'seed-guards.ts']) assert.ok(!readFileSync(join('prisma', f), 'utf8').includes(PW));

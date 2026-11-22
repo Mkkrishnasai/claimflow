@@ -24,8 +24,8 @@ const users: { email: string; role: Role; manager: string | null }[] = [
 
 const prisma = new PrismaClient();
 try {
-  // cost 10: seed-only exception (NFR-SEC-4)
-  const hashes = await Promise.all(users.map(() => bcrypt.hash(password, 10)));
+  // cost 12: PRD NFR-SEC-1 (>=12)
+  const hashes = await Promise.all(users.map(() => bcrypt.hash(password, 12)));
   await prisma.$transaction(async (tx) => {
     const ids = new Map<string, string>();
     for (const [i, u] of users.entries()) { // ordered: managers first
