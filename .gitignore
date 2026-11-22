@@ -1,5 +1,7 @@
 .claude/skills/
 CODEX_HANDOFF.md
 .env
-node_modules
+node_modules/
 *.db
+*.db-journal
+dist/
