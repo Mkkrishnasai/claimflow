@@ -34,31 +34,44 @@ function step(cmd, args) {
 step(bin('prisma'), ['migrate', 'deploy']);
 step('npm', ['run', 'seed', '--silent']);
 
+let stopping = false;
 const children = [
   ['web', bin('vite'), ['--config', 'web/vite.config.ts', 'web']],
   ['api', bin('tsx'), ['api/src/server.ts']],
   ...(external ? [] : [['mailpit', 'mailpit', ['--smtp', '127.0.0.1:1025', '--listen', '127.0.0.1:8025']]]),
 ].map(([name, cmd, args]) => {
   const p = spawn(cmd, args, { env, detached: true, stdio: ['ignore', 'inherit', 'inherit'] });
-  p.on('error', (e) => fail(`${name} failed to start: ${e.message}`));
-  p.on('exit', (code) => fail(`${name} exited (${code})`));
+  p.on('error', (e) => stop(1, `${name} failed to start: ${e.message}`));
+  p.on('exit', (code, sig) => stop(1, `${name} exited (${code ?? sig})`));
   return p;
 });
 
 function kill(sig) {
   for (const p of children) try { process.kill(-p.pid, sig); } catch {}
 }
-function fail(msg) {
-  console.error(msg);
+const groupAlive = () => children.some((p) => { try { return process.kill(-p.pid, 0); } catch { return false; } });
+
+// SIGTERM every child process group, wait up to 5 s for them to vanish, then SIGKILL.
+async function stop(code, msg) {
+  if (stopping) return;
+  stopping = true;
+  if (msg) console.error(msg);
   kill('SIGTERM');
-  setTimeout(() => { kill('SIGKILL'); process.exit(1); }, 5000).unref();
-  process.exitCode = 1;
+  for (let i = 0; i < 50 && groupAlive(); i++) await new Promise((r) => setTimeout(r, 100));
+  kill('SIGKILL');
+  process.exit(code);
 }
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(sig, () => stop(0));
 
 const up = (port) => new Promise((ok) => {
   const s = net.connect(port, '127.0.0.1').once('connect', () => (s.destroy(), ok(true))).once('error', () => ok(false));
 });
-for (const port of [5173, 3001, 8025, 1025]) {
-  while (!(await up(port))) await new Promise((r) => setTimeout(r, 250));
+const deadline = Date.now() + (Number(process.env.START_TIMEOUT_MS) || 60000);
+const services = [[5173, 'web'], [3001, 'api'], [8025, 'mailpit'], [1025, 'mailpit']];
+for (const [port, name] of services) {
+  while (!stopping && !(await up(port))) {
+    if (Date.now() > deadline) await stop(1, `${name} not ready on port ${port} within START_TIMEOUT_MS`);
+    await new Promise((r) => setTimeout(r, 250));
+  }
 }
-console.log('Ready: web http://localhost:5173, api http://localhost:3001, mailpit http://localhost:8025');
+if (!stopping) console.log('Ready: web http://localhost:5173, api http://localhost:3001, mailpit http://localhost:8025');
