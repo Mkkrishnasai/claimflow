@@ -1,8 +1,10 @@
 import { test, expect } from 'vitest';
 import { loadConfig, ConfigError } from './config.js';
 
-const expectConfigError = (env: NodeJS.ProcessEnv, variable: string) =>
-  expect(() => loadConfig(env)).toThrow(expect.objectContaining({ name: 'ConfigError', variable }));
+const expectConfigError = (env: NodeJS.ProcessEnv, variable: string) => {
+  expect(() => loadConfig(env)).toThrow(ConfigError);
+  expect(() => loadConfig(env)).toThrow(expect.objectContaining({ variable }));
+};
 
 const ok = { DATABASE_URL: 'file:./x.db', SMTP_HOST: 'h', SMTP_PORT: '1025' };
 
