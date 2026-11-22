@@ -135,3 +135,31 @@ test('AC-5: test routes only in test mode', async () => {
     await t.stop();
   }
 });
+
+test('S4 AC-3..AC-5: markers never reach logs; 5xx line redacted', async () => {
+  const [m1, m2, m3] = ['MARK_PW_91', 'MARK_RC_92', 'MARK_BA_93'];
+  const s = await start(['npm', 'run', '-s', 'start:api:test']);
+  try {
+    await fetch(`${BASE}/__test/echo`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ password: m1, receipt: m2, bankAccount: m3 }),
+    });
+    const q = (a: string, b: string, c: string) => `password=${a}&receipt=${b}&bankAccount=${c}`;
+    const r = await fetch(`${BASE}/__test/error?${q(m1, m2, m3)}`);
+    assert.equal(r.status, 500);
+    const requestId = (await r.json()).requestId;
+    // AC-5: stack-shaped markers
+    const stk = ['MARKER_1', 'MARKER_2', 'MARKER_3'].map((m) => `%0A%20%20%20%20at%20${m}`).join('');
+    assert.equal((await fetch(`${BASE}/__test/error?${q(stk, stk, stk)}`)).status, 500);
+    await settle();
+    for (const m of [m1, m2, m3, 'MARKER_1', 'MARKER_2', 'MARKER_3']) {
+      assert.ok(!s.out.includes(m) && !s.err.includes(m), m);
+    }
+    const line = reqLines(s.out).find((o) => o.requestId === requestId);
+    assert.equal(line.level, 'error');
+    assert.equal(line.status, 500);
+    for (const k of ['password', 'receipt', 'bankAccount']) assert.equal(line.error.context[k], '[REDACTED]');
+  } finally {
+    await s.stop();
+  }
+});

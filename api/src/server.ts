@@ -1,19 +1,33 @@
+import { pathToFileURL } from 'node:url';
 import { loadDotenv } from './env.js';
 import { ConfigError, loadConfig } from './config.js';
 import { createApp } from './app.js';
-import { createLogger } from './logger.js';
+import { createLogger, serializeError, type Logger } from './logger.js';
 
-loadDotenv();
-try {
-  loadConfig();
-} catch (e) {
-  if (e instanceof ConfigError) {
-    console.error(`Configuration error: ${e.message}`); // stderr, not stdout
-    process.exit(1);
+export function onFatal(log: Logger, e: unknown, exit: (code: number) => unknown = process.exit): void {
+  try {
+    log.error('fatal', { error: serializeError(e) });
+  } finally {
+    exit(1);
   }
-  throw e;
 }
-const log = createLogger();
-createApp({ testRoutes: process.env.NODE_ENV === 'test', log }).listen(3001, '127.0.0.1', () =>
-  log.info('API listening', { host: '127.0.0.1', port: 3001 }),
-);
+
+// Only start when run directly, so tests can import onFatal.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  loadDotenv();
+  try {
+    loadConfig();
+  } catch (e) {
+    if (e instanceof ConfigError) {
+      console.error(`Configuration error: ${e.message}`); // stderr, not stdout
+      process.exit(1);
+    }
+    throw e;
+  }
+  const log = createLogger();
+  process.on('uncaughtException', (e) => onFatal(log, e));
+  process.on('unhandledRejection', (e) => onFatal(log, e));
+  createApp({ testRoutes: process.env.NODE_ENV === 'test', log }).listen(3001, '127.0.0.1', () =>
+    log.info('API listening', { host: '127.0.0.1', port: 3001 }),
+  );
+}
