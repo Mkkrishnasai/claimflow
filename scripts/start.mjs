@@ -14,12 +14,8 @@ for (const k of Object.keys(process.env)) if (process.env[k] === '') delete proc
 const { default: dotenv } = await import('dotenv');
 dotenv.config({ path: process.env.DOTENV_CONFIG_PATH ?? '.env', quiet: true, override: false });
 
-if (!process.env.DATABASE_URL) {
-  console.error('DATABASE_URL is not set');
-  process.exit(1);
-}
-
-const problems = await preflight(process.env);
+// One pass: DATABASE_URL absence is reported together with the ordinary preflight failures.
+const problems = [...(process.env.DATABASE_URL ? [] : ['DATABASE_URL is not set']), ...(await preflight(process.env))];
 if (problems.length) {
   console.error(problems.join('\n'));
   process.exit(1);

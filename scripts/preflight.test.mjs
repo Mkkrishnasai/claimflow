@@ -1,5 +1,6 @@
 import { test, expect } from 'vitest';
 import net from 'node:net';
+import { spawn } from 'node:child_process';
 import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -59,4 +60,58 @@ test('external mailpit not answering names 8025 and 1025', async () => {
   const f = await preflight({ PATH: os.tmpdir(), MAILPIT_EXTERNAL: '1' }, ver);
   expect(f.some((m) => m.includes('1025'))).toBeTruthy();
   expect(f.some((m) => m.includes('8025'))).toBeTruthy();
+});
+
+// --- Process-level tests of `node scripts/start.mjs`. Serial with the unit tests above
+// (vitest fileParallelism:false); ports 5173/3001/1025/8025 must be free on the host.
+const start = path.resolve('scripts/start.mjs');
+function runStart(env, ports = []) {
+  const db = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'db-')), 'throwaway.db');
+  return Promise.all(ports.map((p) => listen(p))).then((servers) => new Promise((ok) => {
+    const c = spawn(process.execPath, [start], {
+      env: { ...env, DATABASE_URL: `file:${db}`, DOTENV_CONFIG_PATH: path.join(os.tmpdir(), 'no-such.env') },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let out = '', err = '';
+    c.stdout.on('data', (d) => (out += d));
+    c.stderr.on('data', (d) => (err += d));
+    c.on('close', async (code) => { await Promise.all(servers.map(close)); ok({ code, out, err, db }); });
+  }));
+}
+const noSideEffects = (r) => {
+  expect(r.out).toBe(''); // no "Ready", no migrate/seed/service output
+  expect(fs.existsSync(r.db)).toBe(false); // migrate would have created the DB file
+};
+
+test('start.mjs: occupied port exits non-zero, one message per line, nothing executed', async () => {
+  const r = await runStart(withMailpit, [3001]);
+  expect(r.code).not.toBe(0);
+  expect(r.err.trim().split('\n')).toEqual(['Port 3001 is already in use']);
+  noSideEffects(r);
+});
+
+test('start.mjs: missing mailpit exits non-zero naming mailpit, nothing executed', async () => {
+  const r = await runStart({ PATH: os.tmpdir() });
+  expect(r.code).not.toBe(0);
+  const lines = r.err.trim().split('\n');
+  expect(lines).toHaveLength(1);
+  expect(lines[0]).toMatch(/^mailpit not found on PATH/);
+  noSideEffects(r);
+});
+
+test('start.mjs: missing DATABASE_URL is aggregated with preflight failures, one per line', async () => {
+  const r = await new Promise((ok) => {
+    const c = spawn(process.execPath, [start], {
+      env: { PATH: os.tmpdir(), DOTENV_CONFIG_PATH: path.join(os.tmpdir(), 'no-such.env') },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let err = '';
+    c.stderr.on('data', (d) => (err += d));
+    c.on('close', (code) => ok({ code, err }));
+  });
+  expect(r.code).not.toBe(0);
+  expect(r.err.trim().split('\n')).toEqual([
+    'DATABASE_URL is not set',
+    expect.stringMatching(/^mailpit not found on PATH/),
+  ]);
 });
