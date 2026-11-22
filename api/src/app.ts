@@ -1,18 +1,21 @@
 import express, { type Express } from 'express';
+import { createLogger, type Logger } from './logger.js';
+import { errorHandler, notFound, requestLog } from './middleware.js';
+import { testRouter } from './test-routes.js';
 
 export interface AppOptions {
   testRoutes?: boolean;
-  log?: (msg: string) => void;
+  log?: Logger;
 }
 
-// testRoutes/log are wired in later stories (S3).
-export function createApp(_opts: AppOptions = {}): Express {
+export function createApp(opts: AppOptions = {}): Express {
   const app = express();
+  app.use(requestLog(opts.log ?? createLogger()));
   app.get('/health', (_req, res) => {
     res.status(200).json({ status: 'ok' });
   });
-  app.use((_req, res) => {
-    res.status(404).json({ error: 'not_found' });
-  });
+  if (opts.testRoutes) app.use(testRouter);
+  app.use(notFound);
+  app.use(errorHandler);
   return app;
 }
