@@ -8,12 +8,16 @@ export interface Logger {
 
 const SENSITIVE = new Set(['password', 'receipt', 'bankaccount', 'sortcode', 'authorization', 'cookie', 'token']);
 
-// Stack frames only; the String(err) header (message, may hold newlines) is dropped. Fails closed to [].
+// Stack frames only; the header (message, may hold newlines) is dropped. Fails closed to [].
+// Limit: V8 builds the header at construction, so we try String(err) plus constructor-name and 'Error' headers;
+// a name changed after construction (not in the constructor) or a mutated message yields [].
 function frames(err: Error): string[] {
   try {
-    const header = String(err);
-    if (typeof err.stack !== 'string' || !err.stack.startsWith(header)) return [];
-    return err.stack.slice(header.length).split('\n').filter((l) => /^\s+at /.test(l));
+    const hdr = (n: string) => (err.message ? `${n}: ${err.message}` : n);
+    const ctor = (Object.getPrototypeOf(err)?.constructor as { name?: string } | undefined)?.name ?? 'Error';
+    const header = [String(err), hdr(ctor), hdr('Error')].find((h) => typeof err.stack === 'string' && err.stack.startsWith(h));
+    if (header === undefined) return [];
+    return err.stack!.slice(header.length).split('\n').filter((l) => /^\s+at /.test(l));
   } catch {
     return [];
   }
@@ -37,7 +41,8 @@ export function redact<T>(v: T): T {
     if (x instanceof Error) return serializeError(x);
     if (x === null || typeof x !== 'object') return x;
     const proto = Object.getPrototypeOf(x);
-    if (!Array.isArray(x) && proto !== Object.prototype && proto !== null) return x;
+    // Non-plain objects (class instances, Map, Set, Buffer...) may hide sensitive keys; Date has none.
+    if (!Array.isArray(x) && proto !== Object.prototype && proto !== null) return x instanceof Date ? x : '[Unserializable]';
     if (path.has(x)) return '[Circular]';
     path.add(x);
     const out = Array.isArray(x)
@@ -53,7 +58,13 @@ export function redact<T>(v: T): T {
 
 export function createLogger(stream: { write(s: string): unknown } = process.stdout): Logger {
   const log = (level: Level, msg: string, fields: Record<string, unknown> = {}) => {
-    stream.write(JSON.stringify(redact({ timestamp: new Date().toISOString(), level, msg, ...fields })) + '\n');
+    let line: string;
+    try {
+      line = JSON.stringify(redact({ ...fields, timestamp: new Date().toISOString(), level, msg }));
+    } catch {
+      line = JSON.stringify({ timestamp: new Date().toISOString(), level, msg: 'log_serialization_failed' });
+    }
+    stream.write(line + '\n');
   };
   return {
     log,

@@ -39,3 +39,29 @@ test('serializeError: no message/cause text, header stripped, fails closed', () 
   expect(serializeError(changed).stack).toEqual([]);
   expect(redact({ e: changed }).e.stack).toEqual([]);
 });
+
+test('F-001: non-plain objects never leak sensitive keys', () => {
+  class Creds { password = 'CLS_PW'; }
+  const { lines, log } = capture();
+  log.info('x', { c: new Creds(), m: new Map([['password', 'MAP_PW']]), s: new Set(['SET_PW']), b: Buffer.from('BUF_PW') });
+  const out = lines.join('');
+  expect(/CLS_PW|MAP_PW|SET_PW|BUF_PW/.test(out)).toBe(false);
+  expect(JSON.parse(out).c).toBe('[Unserializable]');
+});
+
+test('F-002: subclass setting name in constructor keeps frames', () => {
+  class MyErr extends Error { constructor(m: string) { super(m); this.name = 'MyErr'; } }
+  const s = serializeError(new MyErr('boom'));
+  expect(s.name).toBe('MyErr');
+  expect((s.stack as string[]).length).toBeGreaterThan(0);
+});
+
+test('F-005: serialisation failure emits fixed line; core fields win', () => {
+  const { lines, log } = capture();
+  log.info('x', { big: 1n });
+  expect(JSON.parse(lines[0]).msg).toBe('log_serialization_failed');
+  log.info('real', { msg: 'spoof', level: 'debug', timestamp: 'x' });
+  const o = JSON.parse(lines[1]);
+  expect([o.msg, o.level]).toEqual(['real', 'info']);
+  expect(o.timestamp).not.toBe('x');
+});

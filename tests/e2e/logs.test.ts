@@ -149,10 +149,11 @@ test('S4 AC-3..AC-5: markers never reach logs; 5xx line redacted', async () => {
   const [m1, m2, m3] = ['MARK_PW_91', 'MARK_RC_92', 'MARK_BA_93'];
   const s = await start(['npm', 'run', '-s', 'start:api:test']);
   try {
-    await fetch(`${BASE}/__test/echo`, {
+    const echo = await fetch(`${BASE}/__test/echo`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ password: m1, receipt: m2, bankAccount: m3 }),
     });
+    assert.equal(echo.status, 200);
     const q = (a: string, b: string, c: string) => `password=${a}&receipt=${b}&bankAccount=${c}`;
     const r = await fetch(`${BASE}/__test/error?${q(m1, m2, m3)}`);
     assert.equal(r.status, 500);
@@ -168,6 +169,9 @@ test('S4 AC-3..AC-5: markers never reach logs; 5xx line redacted', async () => {
     assert.equal(line.level, 'error');
     assert.equal(line.status, 500);
     for (const k of ['password', 'receipt', 'bankAccount']) assert.equal(line.error.context[k], '[REDACTED]');
+    const ej = JSON.stringify(line.error);
+    assert.ok(!ej.includes('test error') && !ej.includes('cause '));
+    assert.deepEqual(line.error.cause, { name: 'Error' });
   } finally {
     await s.stop();
   }
