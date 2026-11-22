@@ -8,7 +8,7 @@
   },
   "scripts": {
     "start": "node scripts/start.mjs",
-    "test:unit": "node --import tsx --test api/src/*.test.ts prisma/*.test.ts",
+    "test:unit": "node --import tsx --test api/src/*.test.ts prisma/*.test.ts scripts/*.test.mjs",
     "test:e2e": "node --import tsx --test --test-concurrency=1 tests/e2e/*.test.ts",
     "start:api:test": "NODE_ENV=test DATABASE_URL=file:./test.db sh -c 'prisma migrate deploy 1>&2 && exec tsx api/src/server.ts'",
     "postinstall": "prisma generate",

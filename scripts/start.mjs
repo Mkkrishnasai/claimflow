@@ -2,9 +2,10 @@
 import { spawn, spawnSync } from 'node:child_process';
 import net from 'node:net';
 
-const major = Number(process.versions.node.split('.')[0]);
-if (major < 20 || major >= 23) {
-  console.error(`Unsupported Node ${process.version}: need >=20 <23`);
+import { nodeVersionOk, preflight } from './preflight.mjs';
+
+if (!nodeVersionOk(process.versions.node)) {
+  console.error(`Node >=20 <23 required, found ${process.version}`);
   process.exit(1);
 }
 
@@ -16,6 +17,13 @@ if (!process.env.DATABASE_URL) {
   process.exit(1);
 }
 
+const problems = await preflight(process.env);
+if (problems.length) {
+  console.error(problems.join('\n'));
+  process.exit(1);
+}
+
+const external = process.env.MAILPIT_EXTERNAL === '1';
 const bin = (n) => `node_modules/.bin/${n}`;
 const env = { ...process.env, NODE_ENV: process.env.NODE_ENV === 'production' ? 'production' : 'development' };
 
@@ -29,7 +37,7 @@ step('npm', ['run', 'seed', '--silent']);
 const children = [
   ['web', bin('vite'), ['--config', 'web/vite.config.ts', 'web']],
   ['api', bin('tsx'), ['api/src/server.ts']],
-  ['mailpit', 'mailpit', ['--smtp', '127.0.0.1:1025', '--listen', '127.0.0.1:8025']],
+  ...(external ? [] : [['mailpit', 'mailpit', ['--smtp', '127.0.0.1:1025', '--listen', '127.0.0.1:8025']]]),
 ].map(([name, cmd, args]) => {
   const p = spawn(cmd, args, { env, detached: true, stdio: ['ignore', 'inherit', 'inherit'] });
   p.on('error', (e) => fail(`${name} failed to start: ${e.message}`));
