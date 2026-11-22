@@ -41,8 +41,12 @@ export function redact<T>(v: T): T {
     if (x instanceof Error) return serializeError(x);
     if (x === null || typeof x !== 'object') return x;
     const proto = Object.getPrototypeOf(x);
-    // Non-plain objects (class instances, Map, Set, Buffer...) may hide sensitive keys; Date has none.
-    if (!Array.isArray(x) && proto !== Object.prototype && proto !== null) return x instanceof Date ? x : '[Unserializable]';
+    // Non-plain objects (class instances, Map, Set, Buffer...) may hide sensitive keys. Dates (incl. subclasses) are
+    // converted with the trusted prototype method so a custom toJSON/toISOString cannot smuggle secrets.
+    if (x instanceof Date) {
+      try { return Date.prototype.toISOString.call(x); } catch { return '[Invalid Date]'; }
+    }
+    if (!Array.isArray(x) && proto !== Object.prototype && proto !== null) return '[Unserializable]';
     if (path.has(x)) return '[Circular]';
     path.add(x);
     const out = Array.isArray(x)

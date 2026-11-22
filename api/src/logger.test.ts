@@ -65,3 +65,18 @@ test('F-005: serialisation failure emits fixed line; core fields win', () => {
   expect([o.msg, o.level]).toEqual(['real', 'info']);
   expect(o.timestamp).not.toBe('x');
 });
+
+test('Date with custom toJSON/toISOString cannot bypass redaction', () => {
+  const secret = 'S3CRET-DATE';
+  class EvilDate extends Date {
+    toJSON(): any { return { password: secret }; }
+    toISOString() { return secret; }
+  }
+  const d = new Date(0);
+  (d as unknown as { toJSON: () => unknown }).toJSON = () => ({ password: secret });
+  const lines: string[] = [];
+  createLogger({ write: (s) => lines.push(s) }).info('x', { a: new EvilDate(0), b: d, c: new Date(NaN) });
+  const out = lines.join('');
+  expect(out).not.toContain(secret);
+  expect(JSON.parse(out)).toMatchObject({ a: '1970-01-01T00:00:00.000Z', b: '1970-01-01T00:00:00.000Z', c: '[Invalid Date]' });
+});
