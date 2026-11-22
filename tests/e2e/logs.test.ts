@@ -2,7 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PrismaClient } from '@prisma/client';
@@ -16,6 +17,10 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 interface Server { proc: ChildProcess; out: string; err: string; stop(): Promise<void> }
 
 async function start(cmd: string[], extraEnv: Record<string, string> = {}): Promise<Server> {
+  await new Promise<void>((res, rej) => {
+    const probe = createServer().once('error', () => rej(new Error('port 3001 is occupied; stop the other server first')));
+    probe.listen(3001, '127.0.0.1', () => probe.close(() => res()));
+  });
   const dir = mkdtempSync(join(tmpdir(), 'logs-'));
   const outF = join(dir, 'out'), errF = join(dir, 'err');
   const proc = spawn(`${cmd.join(' ')} >${outF} 2>${errF}`, { shell: true, detached: true, env: { ...env, ...extraEnv } });
@@ -42,16 +47,19 @@ const settle = () => sleep(300);
 
 test('test mode: AC-1..AC-4, AC-6', async () => {
   const devDb = 'prisma/dev.db';
-  if (!existsSync(devDb)) writeFileSync(devDb, 'placeholder-dev-db');
+  assert.ok(existsSync(devDb), 'prisma/dev.db missing: run `npx prisma migrate deploy && npm run seed` with DATABASE_URL=file:./dev.db');
+  const dev = new PrismaClient({ datasourceUrl: 'file:./dev.db' });
+  try { assert.equal(await dev.user.count(), 5); } finally { await dev.$disconnect(); }
   const hash = () => createHash('sha256').update(readFileSync(devDb)).digest('hex');
   const before = hash();
   const s = await start(['npm', 'run', '-s', 'start:api:test']);
   try {
     // AC-1
-    const base = lines(s.out).length;
+    const base = reqLines(s.out).length;
     const r1 = await fetch(`${BASE}/health`);
     await settle();
     let rl = reqLines(s.out);
+    assert.equal(rl.length - base, 1);
     const health = rl.filter((o) => o.path === '/health').pop();
     assert.equal(r1.status, 200);
     for (const k of REQUIRED) assert.ok(health[k] !== undefined && health[k] !== '', k);
@@ -59,7 +67,6 @@ test('test mode: AC-1..AC-4, AC-6', async () => {
     assert.equal(health.method, 'GET');
     assert.equal(health.status, 200);
     assert.ok(!Number.isNaN(Date.parse(health.timestamp)) && health.timestamp.endsWith('Z'));
-    assert.ok(lines(s.out).length > base); // sanity
 
     // AC-2
     const r2 = await fetch(`${BASE}/health`, { headers: { 'X-Request-Id': 'spoofed-1' } });
@@ -87,8 +94,10 @@ test('test mode: AC-1..AC-4, AC-6', async () => {
     assert.ok(rl.length >= 20);
     for (const o of rl) {
       for (const k of REQUIRED) assert.ok(o[k] !== undefined && o[k] !== '', k);
-      if (o.status >= 500) assert.equal(o.level, 'error');
-      else if (o.status >= 400) assert.equal(o.level, 'warn');
+      assert.equal(typeof o.duration_ms, 'number');
+      if (o.status < 400) assert.equal(o.level, 'info');
+      else if (o.status >= 500) assert.equal(o.level, 'error');
+      else assert.equal(o.level, 'warn');
     }
     assert.ok(rl.some((o) => o.status === 404) && rl.some((o) => o.status === 400) && rl.some((o) => o.status === 500));
     const errBody = await err.json();

@@ -26,7 +26,8 @@ export const notFound: RequestHandler = (_req, res) => {
 };
 
 // Never emits err.message; 5xx errors are stashed for the access line. Parser errors (which carry the raw body) are never logged.
-export const errorHandler: ErrorRequestHandler = (err, _req, res, _next) => {
+export const errorHandler: ErrorRequestHandler = (err, _req, res, next) => {
+  if (res.headersSent) return next(err);
   const s = err?.status ?? err?.statusCode;
   if (typeof s === 'number' && s >= 400 && s <= 499) {
     res.status(s).json({ error: 'bad_request' });
