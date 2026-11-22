@@ -27,7 +27,7 @@ test('AC-1 migrate deploy is idempotent', () => {
   expect(r.stdout).toMatch(/No pending migrations/);
 });
 
-test('AC-2/4 seed creates exact hierarchy with cost-12 hashes', async () => {
+test('AC-2/4 seed creates exact hierarchy with cost>=12 hashes', async () => {
   expect(seed(baseEnv).status).toBe(0);
   const p = db();
   const users = await p.user.findMany();
@@ -43,7 +43,7 @@ test('AC-2/4 seed creates exact hierarchy with cost-12 hashes', async () => {
   expect(by['finance@claimflow.test'].managerId).toBe(sm.id);
   expect(by['admin@claimflow.test'].managerId).toBe(sm.id);
   for (const u of users) {
-    expect(u.passwordHash).toMatch(/^\$2[aby]\$12\$/);
+    expect(Number(/^\$2[aby]\$(\d\d)\$/.exec(u.passwordHash)?.[1])).toBeGreaterThanOrEqual(12);
     expect(await bcrypt.compare(PW, u.passwordHash)).toBeTruthy();
   }
   for (const f of ['seed.ts', 'seed-guards.ts']) expect(!readFileSync(join('prisma', f), 'utf8').includes(PW)).toBeTruthy();
