@@ -8,7 +8,7 @@ import { createLogger, type Logger } from './logger.js';
 import { errorHandler, notFound, requestLog } from './middleware.js';
 import { userRoutes } from './users/routes.js';
 import type { Mailer } from './mailer.js';
-import { testRouter } from './test-routes.js';
+import { claimTestRoutes, testRouter } from './test-routes.js';
 
 export interface AppOptions {
   testRoutes?: boolean;
@@ -29,7 +29,10 @@ export function createApp(opts: AppOptions = {}): Express {
     api.use(authenticate(prisma, clock), express.json({ limit: '10kb' }), authRoutes(prisma, clock, opts.deps.verify, { mailer: opts.deps.mailer, publicBaseUrl: opts.deps.publicBaseUrl, log }), userRoutes(opts.deps));
     app.use('/api', api);
   }
-  if (opts.testRoutes) app.use(testRouter);
+  if (opts.testRoutes) {
+    app.use(testRouter);
+    if (opts.deps) app.use(claimTestRoutes(opts.deps.prisma, opts.deps.clock));
+  }
   app.use(notFound);
   app.use(errorHandler);
   return app;
