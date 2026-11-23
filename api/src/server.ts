@@ -3,6 +3,7 @@ import { loadDotenv } from './env.js';
 import { createPrisma } from './db.js';
 import { ConfigError, loadConfig } from './config.js';
 import { createMailer } from './mailer.js';
+import { receiptStorage } from './claims/receipt-storage.js';
 import { createApp } from './app.js';
 import { createLogger, serializeError, type Logger } from './logger.js';
 
@@ -28,9 +29,11 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     throw e;
   }
   const log = createLogger();
+  const receipts = receiptStorage(config.receiptsDir);
+  receipts.ensureDir(); // before listen
   process.on('uncaughtException', (e) => onFatal(log, e));
   process.on('unhandledRejection', (e) => onFatal(log, e));
-  createApp({ testRoutes: process.env.NODE_ENV === 'test', log, deps: { prisma: createPrisma(config), clock: () => new Date(), mailer: createMailer(config), publicBaseUrl: config.publicBaseUrl } }).listen(3001, '127.0.0.1', () =>
+  createApp({ testRoutes: process.env.NODE_ENV === 'test', log, deps: { prisma: createPrisma(config), clock: () => new Date(), mailer: createMailer(config), publicBaseUrl: config.publicBaseUrl, receipts } }).listen(3001, '127.0.0.1', () =>
     log.info('API listening', { host: '127.0.0.1', port: 3001 }),
   );
 }

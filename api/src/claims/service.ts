@@ -1,9 +1,10 @@
 import type { PrismaClient } from '@prisma/client';
 import { HttpError } from '../middleware.js';
 import { requireClaimant, requireEditable, requireReadable } from './access.js';
+import type { ReceiptStore } from './receipt-storage.js';
 import { withWrite, type Clock, type Tx } from '../db.js';
 
-export interface ClaimDeps { prisma: PrismaClient; clock: Clock }
+export interface ClaimDeps { prisma: PrismaClient; clock: Clock; receipts: ReceiptStore }
 
 const bad = (reason: string) => new HttpError(422, 'invalid_input', reason);
 const text = (v: unknown, field: string, min: number, max: number): string => {
@@ -168,4 +169,23 @@ export const deleteClaim = (d: ClaimDeps, user: User, id: string) => withWrite(d
   await tx.receipt.deleteMany({ where: { claimId: id } });
   await tx.claimLine.deleteMany({ where: { claimId: id } });
   await tx.claim.delete({ where: { id } });
+});
+
+// Unlocked pre-check for uploads (404 claim, 403 non-claimant, 409 status, 404 line), before any body is read.
+export const precheckReceipt = (d: ClaimDeps, user: User, id: string, lineId: string): Promise<void> => (async () => {
+  const c = await d.prisma.claim.findUnique({ where: { id }, select: { id: true, claimantId: true, status: true } });
+  if (!c) throw new HttpError(404, 'not_found');
+  requireClaimant(user, c);
+  requireEditable(c);
+  if (!await d.prisma.claimLine.findFirst({ where: { id: lineId, claimId: id }, select: { id: true } })) throw new HttpError(404, 'not_found');
+})();
+
+// Count and insert under the write lock; the caller removes the file if this throws.
+export const addReceiptRow = (d: ClaimDeps, user: User, id: string, lineId: string, f: { storageKey: string; sha256: string; sizeBytes: number; mime: string; originalName: string | null }) => withWrite(d.prisma, async (tx) => {
+  await loadOwn(tx, user, id);
+  await ownLine(tx, id, lineId);
+  if (await tx.receipt.count({ where: { lineId } }) >= 5) throw new HttpError(409, 'receipt_limit', 'A line can have at most 5 receipts');
+  const r = await tx.receipt.create({ data: { lineId, claimId: id, uploadedById: user!.id, uploadedAt: d.clock(), ...f } });
+  await touch(tx, d, id);
+  return { id: r.id, mime: r.mime, sizeBytes: r.sizeBytes, originalName: r.originalName };
 });

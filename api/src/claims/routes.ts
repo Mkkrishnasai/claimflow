@@ -1,7 +1,9 @@
-import { Router } from 'express';
+import { createHash } from 'node:crypto';
+import { Router, type Request } from 'express';
 import { mount, type RouteDef } from '../auth/authz.js';
 import { HttpError } from '../middleware.js';
-import { addLine, createClaim, deleteClaim, deleteLine, editClaim, editLine, getClaim, listCategories, listMine, type ClaimDeps } from './service.js';
+import { sniff } from './receipt-storage.js';
+import { addLine, addReceiptRow, precheckReceipt, createClaim, deleteClaim, deleteLine, editClaim, editLine, getClaim, listCategories, listMine, type ClaimDeps } from './service.js';
 
 export const claimRouteDefs = (d: ClaimDeps): RouteDef[] => [
   // E-19
@@ -45,3 +47,61 @@ export const claimRouteDefs = (d: ClaimDeps): RouteDef[] => [
 ];
 
 export const claimRoutes = (d: ClaimDeps): Router => mount(Router(), claimRouteDefs(d));
+
+const MAX_BYTES = 10 * 1024 * 1024;
+const SLOTS = 4; // NFR-PERF-2: at most 4 bodies buffered at once
+let busy = 0;
+const waiting: (() => void)[] = [];
+const acquire = async () => { if (busy >= SLOTS) await new Promise<void>((r) => waiting.push(r)); else busy++; };
+const release = () => { const n = waiting.shift(); if (n) n(); else busy--; };
+
+// Buffers up to MAX_BYTES; past that keeps draining (discarding) so the client gets the 413, not a reset.
+// A declared Content-Length is preallocated so peak memory is one copy; chunked bodies fall back to concat.
+async function readBody(req: Request): Promise<Buffer | null> {
+  const declared = Number(req.get('content-length'));
+  let buf = Number.isInteger(declared) && declared > 0 && declared <= MAX_BYTES ? Buffer.allocUnsafe(declared) : null;
+  const chunks: Buffer[] = [];
+  let n = 0;
+  for await (const c of req as AsyncIterable<Buffer>) {
+    if (n + c.length <= MAX_BYTES) {
+      if (buf && n + c.length <= buf.length) c.copy(buf, n); else { if (buf) { chunks.push(buf.subarray(0, n)); buf = null; } chunks.push(c); }
+    } else chunks.length = 0;
+    n += c.length;
+  }
+  if (n > MAX_BYTES) return null;
+  return buf && n === buf.length ? buf : Buffer.concat(buf ? [buf.subarray(0, n)] : chunks, n);
+}
+const TOO_LARGE = new HttpError(413, 'receipt_too_large', 'Receipt must be 10 MB or smaller');
+const cleanName = (h: string | undefined): string | null => {
+  if (!h) return null;
+  let v = h;
+  try { v = decodeURIComponent(h); } catch { /* keep raw */ }
+  return v.replace(/[\u0000-\u001f\u007f/\\]/g, '').slice(0, 200) || null;
+};
+
+// E-28. Raw body; mounted after authenticate and before every JSON parser.
+export const receiptUploadDefs = (d: ClaimDeps): RouteDef[] => [
+  { method: 'post', path: '/claims/:id/lines/:lineId/receipts', data: 'claim', write: true, handler: async (req, res) => {
+    const id = req.params.id as string, lineId = req.params.lineId as string;
+    await precheckReceipt(d, req.user, id, lineId);
+    const declared = Number(req.get('content-length') ?? 0);
+    if (declared > MAX_BYTES) { await readBody(req); throw TOO_LARGE; }
+    let stored: { storageKey: string; sha256: string; sizeBytes: number; mime: string };
+    await acquire(); // the slot is held until the bytes are on disk, so the buffer is bounded
+    try {
+      const body = await readBody(req);
+      if (!body) throw TOO_LARGE;
+      if (body.length === 0) throw new HttpError(422, 'receipt_empty', 'Receipt must not be empty');
+      const mime = sniff(body);
+      if (!mime) throw new HttpError(422, 'receipt_invalid_type', 'Receipt must be a JPEG, PNG or PDF file');
+      stored = { storageKey: await d.receipts.put(body), sha256: createHash('sha256').update(body).digest('hex'), sizeBytes: body.length, mime };
+    } finally { release(); }
+    try {
+      res.status(201).json(await addReceiptRow(d, req.user, id, lineId, { ...stored, originalName: cleanName(req.get('x-filename')) }));
+    } catch (e) {
+      await d.receipts.remove(stored.storageKey);
+      throw e;
+    }
+  } },
+];
+export const receiptUploadRoutes = (d: ClaimDeps): Router => mount(Router(), receiptUploadDefs(d));
