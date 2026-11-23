@@ -2,7 +2,7 @@ import { Router } from 'express';
 import type { PrismaClient } from '@prisma/client';
 import { HttpError } from '../middleware.js';
 import { withWrite, type Clock } from '../db.js';
-import { hashPassword, needsRehash, randomToken, sha256, verifyPassword } from './secrets.js';
+import { checkPassword, hashPassword, needsRehash, randomToken, sha256, verifyPassword } from './secrets.js';
 import { clearFailures, isLocked, recordFailure } from './throttle.js';
 import { clearCookie, csrfFor, parseCookies, setCookie } from './session.js';
 
@@ -59,6 +59,27 @@ export function authRoutes(prisma: PrismaClient, clock: Clock, verify: typeof ve
     setCookie(res, 'sid', sid);
     clearCookie(res, 'csrf_pre');
     res.json({ id: user.id, name: user.name, role: user.role, csrfToken: csrfFor(sid) });
+  });
+
+  // E-8. Password checked and hashed before the transaction; the conditional update is the single-use gate (arch 5.3).
+  r.post('/auth/set-password', async (req, res) => {
+    const { token, password } = req.body ?? {};
+    checkPassword(password);
+    if (typeof token !== 'string' || token.length > 200) throw new HttpError(400, 'invalid_token');
+    const passwordHash = await hashPassword(password);
+    const now = clock();
+    await withWrite(prisma, async (tx) => {
+      const { count } = await tx.oneTimeToken.updateMany({
+        where: { hash: sha256(token), purpose: 'set_password', usedAt: null, expiresAt: { gt: now } },
+        data: { usedAt: now },
+      });
+      if (count !== 1) throw new HttpError(400, 'invalid_token');
+      const t = await tx.oneTimeToken.findUniqueOrThrow({ where: { hash: sha256(token) }, include: { user: true } });
+      if (!t.user.active) throw new HttpError(400, 'invalid_token'); // rolls back usedAt
+      await tx.user.update({ where: { id: t.userId }, data: { passwordHash } });
+      await tx.session.deleteMany({ where: { userId: t.userId } });
+    });
+    res.json({ ok: true });
   });
 
   // E-6

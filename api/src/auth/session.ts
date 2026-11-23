@@ -6,8 +6,8 @@ import { withWrite, type Clock } from '../db.js';
 import { sha256 } from './secrets.js';
 
 export const IDLE_MS = 30 * 60_000;
-// Paths are relative to the /api mount. Later stories add forgot-password and set-password.
-export const PUBLIC_ROUTES = new Set(['GET /auth/csrf', 'POST /auth/sign-in']);
+// Paths are relative to the /api mount. Later stories add forgot-password.
+export const PUBLIC_ROUTES = new Set(['GET /auth/csrf', 'POST /auth/sign-in', 'POST /auth/set-password']);
 
 export interface AuthUser { id: string; name: string; role: Role }
 declare global {
