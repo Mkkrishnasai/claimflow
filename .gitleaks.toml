@@ -1,0 +1,6 @@
+[extend]
+useDefault = true
+
+[allowlist]
+description = "local-only untracked files"
+paths = ['''(^|/)\.env$''', '''(^|/)node_modules/''', '''\.db$''', '''\.db-journal$''']

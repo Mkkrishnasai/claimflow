@@ -1,0 +1,4 @@
+# Strict config for the CI full-history scan: default rules only, deliberately NO allowlist,
+# so a committed .env/.db is never excused by the local working-tree exceptions.
+[extend]
+useDefault = true
