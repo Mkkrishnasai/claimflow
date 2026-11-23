@@ -37,9 +37,9 @@ async function mailLink(to: string): Promise<string> {
   throw new Error('no mail');
 }
 const phone = async () => (await browser.newContext({ viewport: { width: 360, height: 740 } })).newPage();
-async function clean(page: Page, label: string) {
-  const { violations } = await new AxeBuilder({ page }).analyze();
-  const bad = violations.filter((v) => v.impact === 'serious' || v.impact === 'critical');
+async function clean(page: Page, label: string, strict = false) {
+  const { violations } = await (strict ? new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']) : new AxeBuilder({ page })).analyze();
+  const bad = strict ? violations : violations.filter((v) => v.impact === 'serious' || v.impact === 'critical');
   assert.deepEqual(bad.map((v) => v.id), [], label);
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), `${label}: horizontal scroll`);
 }
@@ -77,13 +77,13 @@ test('AC-5 axe 0 serious/critical and no horizontal scroll at 360 px', async () 
   await page.fill('#email', 'employee@claimflow.test');
   await page.fill('#password', PW);
   await page.press('#password', 'Enter'); // keyboard-only submit
-  await page.getByRole('heading', { name: 'User detail' }).waitFor();
+  await page.getByRole('heading', { name: 'My claims' }).waitFor();
   await clean(page, 'signed in');
 });
 
 test('AC-1/4 role routing and session restore; 401 routes to sign-in', async () => {
   const page = await phone();
-  for (const [email, expected] of [['admin@claimflow.test', /^\/users$/], ['finance@claimflow.test', /^\/users\/.+/]] as const) {
+  for (const [email, expected] of [['admin@claimflow.test', /^\/users$/], ['finance@claimflow.test', /^\/claims$/]] as const) {
     await page.goto(WEB + '/sign-in');
     await page.fill('#email', email);
     await page.fill('#password', PW);
@@ -92,7 +92,7 @@ test('AC-1/4 role routing and session restore; 401 routes to sign-in', async () 
     const session = page.waitForResponse((r) => r.url().endsWith('/api/auth/session'));
     await page.reload();
     assert.equal((await session).status(), 200);
-    await page.getByRole('heading', { name: expected.source.includes('.+') ? 'User detail' : 'Users' }).waitFor();
+    await page.getByRole('heading', { name: expected.source.includes('claims') ? 'My claims' : 'Users' }).waitFor();
     assert.equal(await page.evaluate(() => document.activeElement?.tagName), 'H1');
     await page.context().clearCookies();
     await page.evaluate(() => fetch('/api/users', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }));
@@ -108,7 +108,6 @@ test('AC-2/3 link to signed in < 2 min; error states', async () => {
   const email = 'newbie@claimflow.test';
   const r = await fetch(`${WEB}/api/users`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-csrf-token': admin.csrf, cookie: admin.cookie }, body: JSON.stringify({ name: 'Newbie', email, role: 'employee' }) });
   assert.equal(r.status, 201);
-  const id = ((await r.json()) as { id: string }).id;
   const link = await mailLink(email);
   const page = await phone();
 
@@ -128,7 +127,7 @@ test('AC-2/3 link to signed in < 2 min; error states', async () => {
   const generic = await page.getByRole('alert').innerText();
   await page.fill('#password', NEW_PW);
   await page.click('button[type=submit]');
-  await page.waitForURL((u) => u.pathname === `/users/${id}`);
+  await page.waitForURL((u) => u.pathname === '/claims');
   assert.ok(Date.now() - t0 < 120_000);
 
   // spent link is now "expired"
@@ -200,7 +199,70 @@ test('S11 users list and detail: cards, actions, denial, a11y at 360 px', async 
   await emp.fill('#email', 'employee@claimflow.test');
   await emp.fill('#password', PW);
   await emp.press('#password', 'Enter');
-  await emp.getByRole('heading', { name: 'User detail' }).waitFor();
+  await emp.getByRole('heading', { name: 'My claims' }).waitFor();
   await emp.goto(WEB + '/users');
   assert.match(await emp.getByRole('alert').innerText(), /Access denied/);
+});
+
+test('S9 claims list and editor: capture, amounts, a11y at 360 px, keyboard', async () => {
+  const page = await phone();
+  await page.goto(WEB + '/sign-in');
+  await page.fill('#email', 'finance@claimflow.test');
+  await page.fill('#password', PW);
+  await page.press('#password', 'Enter');
+  await page.getByRole('heading', { name: 'My claims' }).waitFor();
+  await page.getByText('No claims yet').waitFor();
+  assert.equal(await page.evaluate(() => document.activeElement?.tagName), 'H1');
+  await clean(page, '/claims', true);
+  assert.equal(await page.getByRole('link', { name: 'My account' }).count(), 1);
+
+  await page.getByRole('link', { name: 'New claim' }).click();
+  await page.getByRole('heading', { name: 'New claim' }).waitFor();
+  await page.locator('label[for=title]:visible').waitFor();
+  for (const id of await page.locator('input:not([type=file]), select, textarea').evaluateAll((els) => els.map((e) => e.id))) {
+    assert.equal(await page.locator(`label[for="${id}"]:visible`).count(), 1, `label for #${id}`);
+  }
+  await clean(page, '/claims/new', true);
+  assert.ok((await page.locator('select option').first().innerText()).includes('limit EUR'));
+
+  await page.fill('#title', 'Berlin trip');
+  await page.fill('#purpose', 'Client workshop in Berlin');
+  const date = page.locator('input[type=date]');
+  await date.fill('2026-01-15');
+  const amt = page.locator('input[id^=amt-]');
+  await page.locator('input[id^=desc-]').fill('Taxi');
+  await amt.fill('1.234');
+  await page.getByRole('button', { name: 'Save claim' }).click();
+  await page.locator('[id^=amt-err-]').waitFor();
+  assert.match(page.url(), /\/claims\/new$/); // nothing sent
+  await amt.fill('12,50');
+  const save = page.getByRole('button', { name: 'Save claim' });
+  await save.focus();
+  await page.keyboard.press('Enter');
+  await page.waitForURL(/\/claims\/[^/]+\/edit$/);
+  await page.getByRole('button', { name: 'Save claim' }).waitFor();
+  assert.equal(await amt.inputValue(), '12.50');
+
+  for (const b of await page.locator('label.button, button[type=submit]').all()) {
+    const box = (await b.boundingBox())!;
+    assert.ok(box.width >= 44 && box.height >= 44, 'tap target >= 44px');
+  }
+  assert.equal(await page.locator('input[capture=environment][accept="image/*"]').count(), 1);
+  await clean(page, '/claims/:id/edit', true);
+
+  // upload: valid PNG accepted, text file refused with the server's reason in an alert
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64');
+  const files = page.locator('input[accept="image/jpeg,image/png,application/pdf"]');
+  await files.setInputFiles({ name: 'r.png', mimeType: 'image/png', buffer: png });
+  await page.getByText('r.png').waitFor();
+  await page.getByRole('button', { name: /Remove receipt/ }).click();
+  await page.getByText('r.png').waitFor({ state: 'detached' });
+  await page.locator('input[accept="image/*"]').setInputFiles({ name: 'a.png', mimeType: 'image/png', buffer: Buffer.from('not an image') });
+  await page.locator('fieldset').getByRole('alert').waitFor();
+  assert.match(await page.locator('fieldset').getByRole('alert').innerText(), /JPEG, PNG or PDF/);
+
+  // unknown claim: server refusal shown, no editable fields (submitted claims need CLAIM-3-S6 to set up)
+  await page.goto(WEB + '/claims/nope/edit');
+  assert.match(await page.getByRole('alert').innerText(), /Claim not found/);
+  assert.equal(await page.locator('input#title').count(), 0);
 });
