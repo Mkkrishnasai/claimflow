@@ -17,3 +17,14 @@ export async function managerChain(db: PrismaClient, claimantId: string): Promis
 export async function requireReadable(db: PrismaClient, user: Requester | undefined, claim: ClaimRef): Promise<void> {
   if (!user || !canReadClaim(user, claim, await managerChain(db, claim.claimantId))) throw new HttpError(403, 'forbidden');
 }
+
+// C-27. Writes are claimant-only, whatever the caller's role (FR-5, ADR-31 order: 403 before status checks).
+export function requireClaimant(user: Requester | undefined, claim: ClaimRef): void {
+  if (!user || user.id !== claim.claimantId) throw new HttpError(403, 'forbidden');
+}
+
+// paid is reported before the generic refusal; editable = draft or rejected.
+export function requireEditable(claim: ClaimRef): void {
+  if (claim.status === 'paid') throw new HttpError(409, 'claim_paid');
+  if (claim.status !== 'draft' && claim.status !== 'rejected') throw new HttpError(409, 'claim_not_editable');
+}
