@@ -6,7 +6,7 @@ import bcrypt from 'bcryptjs';
 import { PrismaClient } from '@prisma/client';
 import { createApp } from '../../api/src/app.js';
 import { createLogger } from '../../api/src/logger.js';
-import { approveClaim } from '../../api/src/claims/service.js';
+import { approveClaim, rejectClaim } from '../../api/src/claims/service.js';
 
 const PW = 'correct horse battery';
 const prisma = new PrismaClient();
@@ -225,4 +225,101 @@ test('approve AC-8 route is claim data, CSRF is required, and 20 approvals over 
   for (const id of ids) { const t = performance.now(); assert.equal((await post('M', id)).status, 200); times.push(performance.now() - t); }
   times.sort((a, b) => a - b);
   assert.ok(times[18] < 500, `p95 ${times[18]}`);
+});
+
+// ---- reject (E-35): one test per story/epic AC ----
+const rej = (who: string, id: string, body: unknown = { reason: 'not a business expense' }, token: string | null = csrf[who]) => fetch(`${base}/api/claims/${id}/reject`, { method: 'POST', headers: { 'content-type': 'application/json', cookie: sess[who], ...(token ? { 'x-csrf-token': token } : {}) }, body: JSON.stringify(body) });
+const reasons = async (id: string) => (await prisma.claimEvent.findMany({ where: { claimId: id }, orderBy: { seq: 'asc' } })).map((e) => [e.action, e.reason]);
+
+test('reject AC-1 reason required: missing/empty/blank/9 chars 422, 10 chars 200 with reason in history', async () => {
+  const c = await mkc('E', 'submitted', 'M', [100]);
+  for (const body of [{}, { reason: '' }, { reason: '          ' }, { reason: '123456789' }, { reason: '  123456789  ' }, { reason: 5 }]) {
+    const r = await rej('M', c.id, body);
+    assert.deepEqual([r.status, await code(r)], [422, 'reason_required'], JSON.stringify(body));
+  }
+  assert.deepEqual(await state(c.id), { ...(await state(c.id)), status: 'submitted', actions: [] });
+  const ok = await rej('M', c.id, { reason: '  1234567890  ' });
+  assert.equal(ok.status, 200);
+  assert.equal(((await ok.json()) as J).status, 'rejected');
+  assert.deepEqual(await reasons(c.id), [['reject', '1234567890']]);
+});
+
+test('reject AC-2 501 characters is invalid_input, 500 is fine', async () => {
+  const c = await mkc('E', 'submitted', 'M', [100]);
+  const r = await rej('M', c.id, { reason: 'x'.repeat(501) });
+  assert.deepEqual([r.status, await code(r)], [422, 'invalid_input']);
+  assert.equal((await state(c.id)).status, 'submitted');
+  assert.equal((await rej('M', c.id, { reason: 'x'.repeat(500) })).status, 200);
+});
+
+test('reject AC-3 second approver rejects an approved claim; employee sees it rejected and editable', async () => {
+  const c = await mkc('E', 'submitted', 'M', [300_000]);
+  assert.equal((await post('M', c.id)).status, 200);
+  assert.equal((await rej('S', c.id)).status, 200);
+  assert.deepEqual((await state(c.id)).actions, ['approve_first', 'reject_second']);
+  const mine = (await (await fetch(`${base}/api/claims`, { headers: { cookie: sess.E } })).json()) as J;
+  assert.equal((mine.items ?? mine).find((x: J) => x.id === c.id).status, 'rejected');
+  const edit = await fetch(`${base}/api/claims/${c.id}`, { method: 'PATCH', headers: { 'content-type': 'application/json', cookie: sess.E, 'x-csrf-token': csrf.E }, body: JSON.stringify({ title: 'fixed' }) });
+  assert.equal(edit.status, 200);
+});
+
+test('reject AC-4 authority and state errors, 404 first, 409 before 422', async () => {
+  const forced = await mkc('M', 'submitted', 'M', [100]);
+  const own = await rej('M', forced.id);
+  assert.deepEqual([own.status, await code(own)], [403, 'self_approval']);
+  const c = await mkc('E', 'submitted', 'M', [100]);
+  for (const who of ['M2', 'S', 'F', 'A']) { const x = await rej(who, c.id); assert.deepEqual([who, x.status, await code(x)], [who, 403, 'forbidden']); }
+  const missing = await rej('F', 'nope');
+  assert.deepEqual([missing.status, await code(missing)], [404, 'not_found']);
+  assert.deepEqual((await state(c.id)).actions, []);
+  assert.deepEqual((await state(forced.id)).actions, []);
+  for (const st of ['draft', 'rejected', 'ready_to_pay']) {
+    const x = await mkc('E', st, 'M', [100]);
+    const res = await rej('M', x.id, { reason: 'x' });
+    assert.deepEqual([st, res.status, await code(res)], [st, 409, 'invalid_transition']);
+  }
+});
+
+test('reject AC-5 body amounts/lines/status ignored; only status changes', async () => {
+  const c = await mkc('E', 'submitted', 'M', [300_000]);
+  const r = await rej('M', c.id, { reason: 'not a business expense', amountCents: 1, lines: [], status: 'paid' });
+  assert.equal(r.status, 200);
+  const s = await state(c.id);
+  assert.deepEqual([s.status, s.amounts], ['rejected', [300_000]]);
+});
+
+test('reject AC-6 racing actions give one 200 and one 409; rollback; log line has no reason; CSRF; under 500 ms p95', async () => {
+  const a = await mkc('E', 'submitted', 'M', [100]);
+  const rs = await Promise.all([rej('M', a.id), post('M', a.id)]);
+  assert.deepEqual(rs.map((r) => r.status).sort(), [200, 409]);
+  assert.equal((await state(a.id)).actions.length, 1);
+  const b = await mkc('E', 'submitted', 'M', [100]);
+  assert.deepEqual((await Promise.all([rej('M', b.id), rej('M', b.id)])).map((r) => r.status).sort(), [200, 409]);
+  assert.equal((await state(b.id)).actions.length, 1);
+  const c = await mkc('E', 'submitted', 'M', [100]);
+  const before = await state(c.id);
+  const d = { prisma, clock: () => new Date(), receipts: {} as never, beforeAppend: () => { throw new Error('boom'); } };
+  await assert.rejects(rejectClaim(d, { id: 'M', role: 'manager' }, c.id, { reason: 'not a business expense' }), /boom/);
+  assert.deepEqual(await state(c.id), before);
+  logs.length = 0;
+  assert.equal((await rej('M', c.id, { reason: 'secret reason text' })).status, 200);
+  const line = logs.map((l) => JSON.parse(l) as J).find((l) => l.claimEvent === 'reject')!;
+  assert.deepEqual([line.claimId, line.from, line.to], [c.id, 'submitted', 'rejected']);
+  assert.equal(logs.join('').includes('secret reason'), false);
+  const missing = await rej('M', 'x', {}, null);
+  assert.deepEqual([missing.status, await code(missing)], [403, 'csrf']);
+  const ids = (await Promise.all(Array.from({ length: 20 }, () => mkc('E', 'submitted', 'M', [100])))).map((x) => x.id);
+  const times: number[] = [];
+  for (const id of ids) { const t = performance.now(); assert.equal((await rej('M', id)).status, 200); times.push(performance.now() - t); }
+  times.sort((x, y) => x - y);
+  assert.ok(times[18] < 500, `p95 ${times[18]}`);
+});
+
+test('reject AC-5b the approver cannot write claim or line routes: 403, no row changes', async () => {
+  const c = await mkc('E', 'submitted', 'M', [100]);
+  const before = await state(c.id);
+  const lid = c.lines[0].id;
+  const w = (method: string, path: string) => fetch(`${base}/api/claims/${c.id}${path}`, { method, headers: { 'content-type': 'application/json', cookie: sess.M, 'x-csrf-token': csrf.M }, body: method === 'DELETE' ? undefined : JSON.stringify({ amountCents: 1, title: 'x', date: '2026-01-01', categoryCode: 'meals', description: 'd' }) });
+  for (const [m, p] of [['PATCH', `/lines/${lid}`], ['POST', '/lines'], ['DELETE', `/lines/${lid}`], ['PATCH', '']]) assert.equal((await w(m, p)).status, 403, `${m} ${p}`);
+  assert.deepEqual(await state(c.id), before);
 });
