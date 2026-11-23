@@ -5,7 +5,7 @@ import { mount, type RouteDef } from '../auth/authz.js';
 import { HttpError } from '../middleware.js';
 import { SubmitRefused } from './policy.js';
 import { sniff } from './receipt-storage.js';
-import { addLine, addReceiptRow, precheckReceipt, createClaim, deleteClaim, deleteLine, deleteReceipt, receiptForRead, editClaim, editLine, getClaim, listApprovals, listCategories, listMine, submitClaim, withdrawClaim, type ClaimDeps } from './service.js';
+import { addLine, approveClaim, addReceiptRow, precheckReceipt, createClaim, deleteClaim, deleteLine, deleteReceipt, receiptForRead, editClaim, editLine, getClaim, listApprovals, listCategories, listMine, submitClaim, withdrawClaim, type ClaimDeps } from './service.js';
 
 export const claimRouteDefs = (d: ClaimDeps): RouteDef[] => [
   // E-19
@@ -71,6 +71,12 @@ export const claimRouteDefs = (d: ClaimDeps): RouteDef[] => [
   } },
   { method: 'post', path: '/claims/:id/withdraw', data: 'claim', write: true, handler: async (req, res) => {
     const { claim, ev } = await withdrawClaim(d, req.user, req.params.id as string, req.body ?? {});
+    res.locals.logFields = { claimEvent: ev.action, claimId: claim.id, from: ev.from, to: ev.to };
+    res.json(claim);
+  } },
+  // E-34: authority comes from approverId in the database; the body is never read
+  { method: 'post', path: '/claims/:id/approve', data: 'claim', write: true, handler: async (req, res) => {
+    const { claim, ev } = await approveClaim(d, req.user, req.params.id as string);
     res.locals.logFields = { claimEvent: ev.action, claimId: claim.id, from: ev.from, to: ev.to };
     res.json(claim);
   } },

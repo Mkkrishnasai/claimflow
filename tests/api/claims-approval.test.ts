@@ -6,22 +6,32 @@ import bcrypt from 'bcryptjs';
 import { PrismaClient } from '@prisma/client';
 import { createApp } from '../../api/src/app.js';
 import { createLogger } from '../../api/src/logger.js';
+import { approveClaim } from '../../api/src/claims/service.js';
 
 const PW = 'correct horse battery';
 const prisma = new PrismaClient();
 let srv: Server, base: string;
 const sess: Record<string, string> = {};
+const csrf: Record<string, string> = {};
+const logs: string[] = [];
 type J = Record<string, any>;
 
+// History rows and paid claims are immutable by trigger; cleanup drops the delete guards and restores them verbatim.
+const GUARDS = ['claim_event_no_delete', 'claim_paid_no_delete', 'line_paid_del', 'receipt_paid_del'];
 const wipe = async () => {
-  await prisma.claimEvent.deleteMany(); await prisma.receipt.deleteMany(); await prisma.claimLine.deleteMany(); await prisma.claim.deleteMany();
-  await prisma.session.deleteMany(); await prisma.loginAttempt.deleteMany();
-  await prisma.user.updateMany({ data: { managerId: null } }); await prisma.user.deleteMany();
+  const g = await prisma.$queryRawUnsafe<{ name: string; sql: string }[]>(`SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND name IN (${GUARDS.map((n) => `'${n}'`).join(',')})`);
+  for (const t of g) await prisma.$executeRawUnsafe(`DROP TRIGGER "${t.name}"`);
+  try {
+    await prisma.claimEvent.deleteMany(); await prisma.receipt.deleteMany(); await prisma.claimLine.deleteMany(); await prisma.claim.deleteMany();
+    await prisma.session.deleteMany(); await prisma.loginAttempt.deleteMany();
+    await prisma.user.updateMany({ data: { managerId: null } }); await prisma.user.deleteMany();
+  } finally { for (const t of g) await prisma.$executeRawUnsafe(t.sql); }
 };
 async function signIn(id: string) {
   const pre = await fetch(`${base}/api/auth/csrf`);
   const token = ((await pre.json()) as { csrfToken: string }).csrfToken;
   const r = await fetch(`${base}/api/auth/sign-in`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-csrf-token': token, cookie: pre.headers.getSetCookie()[0].split(';')[0] }, body: JSON.stringify({ email: `${id.toLowerCase()}@claimflow.test`, password: PW }) });
+  csrf[id] = ((await r.json()) as { csrfToken: string }).csrfToken;
   return r.headers.getSetCookie().find((c) => c.startsWith('sid='))!.split(';')[0];
 }
 const get = (who: string | null, path = '/api/approvals') => fetch(`${base}${path}`, { headers: who ? { cookie: sess[who] } : {} });
@@ -32,11 +42,11 @@ before(async () => {
   await wipe();
   const passwordHash = await bcrypt.hash(PW, 4);
   const u = (id: string, role: string, extra = {}) => ({ id, email: `${id.toLowerCase()}@claimflow.test`, name: `N-${id}`, role: role as never, passwordHash, ...extra });
-  await prisma.user.createMany({ data: [u('S', 'manager'), u('F', 'finance'), u('M', 'manager', { managerId: 'S' }), u('E', 'employee', { managerId: 'M' }), u('N', 'employee')] });
-  srv = createApp({ log: createLogger({ write: () => true }), deps: { prisma, clock: () => new Date(), mailer: {} as never, publicBaseUrl: 'http://app.test' } }).listen(0, '127.0.0.1');
+  await prisma.user.createMany({ data: [u('A', 'admin'), u('S', 'manager'), u('F', 'finance'), u('M', 'manager', { managerId: 'S' }), u('E', 'employee', { managerId: 'M' }), u('N', 'employee'), u('M2', 'manager', { managerId: 'S' }), u('I', 'manager', { managerId: 'S', active: false }), u('M3', 'manager', { managerId: 'I' }), u('E3', 'employee', { managerId: 'M3' })] });
+  srv = createApp({ log: createLogger({ write: (l: string) => { logs.push(l); return true; } }), deps: { prisma, clock: () => new Date(), mailer: {} as never, publicBaseUrl: 'http://app.test' } }).listen(0, '127.0.0.1');
   await new Promise((r) => srv.once('listening', r));
   base = `http://127.0.0.1:${(srv.address() as AddressInfo).port}`;
-  for (const id of ['S', 'F', 'M', 'E', 'N']) sess[id] = await signIn(id);
+  for (const id of ['S', 'F', 'M', 'E', 'N', 'M2', 'M3', 'A']) sess[id] = await signIn(id);
 });
 after(async () => { srv.close(); await wipe(); await prisma.$disconnect(); });
 
@@ -96,4 +106,123 @@ test('AC-5 order by submittedAt then id; paging; invalid limit/offset 422', asyn
     assert.equal(r.status, 422, q);
     assert.equal(((await r.json()) as J).error, 'invalid_input');
   }
+});
+
+// ---- approve (E-34): one test per story/epic AC ----
+const post = (who: string, id: string, body: unknown = {}, token: string | null = csrf[who]) => fetch(`${base}/api/claims/${id}/approve`, { method: 'POST', headers: { 'content-type': 'application/json', cookie: sess[who], ...(token ? { 'x-csrf-token': token } : {}) }, body: JSON.stringify(body) });
+const mkc = async (claimantId: string, status: string, approverId: string | null, cents: number[]) => {
+  const now = new Date();
+  return prisma.claim.create({ data: { claimantId, title: 't', purpose: 'purpose text', status: status as never, approverId, createdAt: now, updatedAt: now, submittedAt: approverId ? now : null,
+    lines: { create: cents.map((c, i) => ({ position: i + 1, date: '2026-01-01', categoryCode: 'meals', amountCents: c, description: 'd', limitCents: 5000 })) } }, include: { lines: true } });
+};
+const state = async (id: string) => {
+  const c = await prisma.claim.findUniqueOrThrow({ where: { id }, include: { events: { orderBy: { seq: 'asc' } }, lines: true } });
+  return { status: c.status, approverId: c.approverId, actions: c.events.map((e) => e.action), amounts: c.lines.map((l) => l.amountCents), updatedAt: c.updatedAt.getTime() };
+};
+const code = async (r: Response) => ((await r.json()) as J).error;
+
+test('approve AC-1 total 200,000 goes straight to ready_to_pay with approve_final', async () => {
+  const c = await mkc('E', 'submitted', 'M', [150_000, 50_000]);
+  const r = await post('M', c.id);
+  assert.equal(r.status, 200);
+  assert.equal(((await r.json()) as J).status, 'ready_to_pay');
+  const s = await state(c.id);
+  assert.deepEqual([s.status, s.actions], ['ready_to_pay', ['approve_final']]);
+});
+
+test('approve AC-2 over 200,000 waits for the second approver, who then finishes it', async () => {
+  const c = await mkc('E', 'submitted', 'M', [200_001]);
+  assert.equal((await post('M', c.id)).status, 200);
+  assert.deepEqual(await state(c.id), { ...(await state(c.id)), status: 'approved', approverId: 'S', actions: ['approve_first'] });
+  assert.equal((await list('S')).find((r) => r.id === c.id)!.stage, 'second');
+  assert.equal(await code(await post('M', c.id)), 'invalid_transition'); // M gave the first approval: lost its turn, 409 not 403 (ADR-37)
+  assert.equal((await post('S', c.id)).status, 200);
+  assert.deepEqual((await state(c.id)).actions, ['approve_first', 'approve_second']);
+  assert.equal((await state(c.id)).status, 'ready_to_pay');
+});
+
+test('approve AC-3 no manager above, or inactive manager above, still resolves', async () => {
+  const top = await mkc('M', 'submitted', 'S', [300_000]); // manager's own claim, approver S has no manager
+  assert.equal((await post('S', top.id)).status, 200);
+  assert.deepEqual((await state(top.id)).actions, ['approve_final']);
+  const skip = await mkc('E3', 'submitted', 'M3', [300_000]); // M3's manager I is inactive; S is above I
+  assert.equal((await post('M3', skip.id)).status, 200);
+  const s = await state(skip.id);
+  assert.deepEqual([s.status, s.approverId], ['approved', 'S']);
+});
+
+test('approve AC-4 self-approval, manager routing and authority', async () => {
+  const own = await mkc('M', 'submitted', 'S', [100]); // submit rule routes a manager's claim to their manager
+  assert.equal((await list('S')).some((r) => r.id === own.id), true);
+  assert.equal((await list('M')).some((r) => r.id === own.id), false);
+  const forced = await mkc('M', 'submitted', 'M', [100]);
+  const before = await state(forced.id);
+  const r = await post('M', forced.id);
+  assert.deepEqual([r.status, await code(r)], [403, 'self_approval']);
+  assert.deepEqual(await state(forced.id), before);
+  const c = await mkc('E', 'submitted', 'M', [100]);
+  for (const who of ['M2', 'S', 'F', 'A']) { const x = await post(who, c.id); assert.deepEqual([who, x.status, await code(x)], [who, 403, 'forbidden']); }
+  const missing = await post('F', 'nope');
+  assert.deepEqual([missing.status, await code(missing)], [404, 'not_found']);
+  assert.equal((await state(c.id)).status, 'submitted');
+});
+
+test('approve AC-5 separation of duties and state errors', async () => {
+  const c = await mkc('E', 'approved', 'M', [300_000]);
+  await prisma.claimEvent.create({ data: { claimId: c.id, actorId: 'M', action: 'approve_first', fromStatus: 'submitted', toStatus: 'approved', seq: 1, at: new Date() } });
+  const before = await state(c.id);
+  const r = await post('M', c.id);
+  assert.deepEqual([r.status, await code(r)], [403, 'forbidden']);
+  assert.deepEqual(await state(c.id), before);
+  for (const st of ['draft', 'rejected', 'ready_to_pay']) {
+    const x = await mkc('E', st, 'M', [100]);
+    const res = await post('M', x.id);
+    assert.deepEqual([st, res.status, await code(res)], [st, 409, 'invalid_transition']);
+  }
+  const paid = await mkc('E', 'ready_to_pay', 'M', [100]); // a paid claim refuses line inserts, so move it after
+  await prisma.claim.update({ where: { id: paid.id }, data: { status: 'paid' } });
+  const res = await post('M', paid.id);
+  assert.deepEqual([res.status, await code(res)], [409, 'claim_paid']);
+});
+
+test('approve AC-6 two approves, or approve racing withdraw, give one 200 and one 409', async () => {
+  const a = await mkc('E', 'submitted', 'M', [100]);
+  const rs = await Promise.all([post('M', a.id), post('M', a.id)]);
+  assert.deepEqual(rs.map((r) => r.status).sort(), [200, 409]);
+  assert.deepEqual((await state(a.id)).actions, ['approve_final']);
+  const w = await mkc('E', 'submitted', 'M', [100]);
+  const wd = () => fetch(`${base}/api/claims/${w.id}/withdraw`, { method: 'POST', headers: { 'content-type': 'application/json', cookie: sess.E, 'x-csrf-token': csrf.E }, body: '{}' });
+  const both = await Promise.all([post('M', w.id), wd()]);
+  assert.deepEqual(both.map((r) => r.status).sort(), [200, 409]);
+  assert.equal((await state(w.id)).actions.length, 1);
+  const loser = both.find((r) => r.status === 409)!;
+  assert.equal(await code(loser), 'invalid_transition');
+});
+
+test('approve AC-7 body amounts ignored, failure rolls back, log line is clean', async () => {
+  const c = await mkc('E', 'submitted', 'M', [300_000]);
+  const before = await state(c.id);
+  const d = { prisma, clock: () => new Date(), receipts: {} as never, beforeAppend: () => { throw new Error('boom'); } };
+  await assert.rejects(approveClaim(d, { id: 'M', role: 'manager' }, c.id), /boom/);
+  assert.deepEqual(await state(c.id), before); // status, approverId, history together
+  logs.length = 0;
+  const r = await post('M', c.id, { amountCents: 1, lines: [], status: 'paid', reason: 'secret reason text' });
+  assert.equal(r.status, 200);
+  const s = await state(c.id);
+  assert.deepEqual([s.status, s.approverId, s.amounts], ['approved', 'S', [300_000]]);
+  const line = logs.map((l) => JSON.parse(l) as J).find((l) => l.claimEvent === 'approve_first')!;
+  assert.equal(line.claimId, c.id); assert.equal(line.from, 'submitted'); assert.equal(line.to, 'approved');
+  assert.equal(logs.join('').includes('secret reason'), false);
+});
+
+test('approve AC-8 route is claim data, CSRF is required, and 20 approvals over 10,000 claims stay under 500 ms p95', async () => {
+  const missing = await post('M', 'x', {}, null);
+  assert.deepEqual([missing.status, await code(missing)], [403, 'csrf']);
+  const now = new Date();
+  await prisma.claim.createMany({ data: Array.from({ length: 10_000 }, (_, i) => ({ id: `bulk${i}`, claimantId: 'E', title: 't', purpose: 'purpose text', status: 'draft' as never, createdAt: now, updatedAt: now })) });
+  const ids = (await Promise.all(Array.from({ length: 20 }, () => mkc('E', 'submitted', 'M', [100])))).map((c) => c.id);
+  const times: number[] = [];
+  for (const id of ids) { const t = performance.now(); assert.equal((await post('M', id)).status, 200); times.push(performance.now() - t); }
+  times.sort((a, b) => a - b);
+  assert.ok(times[18] < 500, `p95 ${times[18]}`);
 });

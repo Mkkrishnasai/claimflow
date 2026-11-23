@@ -1,9 +1,10 @@
 import type { PrismaClient } from '@prisma/client';
+import type { Tx } from '../db.js';
 import { canReadClaim, type ClaimRef, type Requester } from '../auth/authz.js';
 import { HttpError } from '../middleware.js';
 
 // C-27. The claimant's two nearest managers, read fresh from the database on every call (no cached grant).
-export async function managerChain(db: PrismaClient, claimantId: string): Promise<(id: string) => string | null> {
+export async function managerChain(db: PrismaClient | Tx, claimantId: string): Promise<(id: string) => string | null> {
   const chain = new Map<string, string | null>();
   let cur: string | null = claimantId;
   for (let i = 0; i < 2 && cur; i++) {
