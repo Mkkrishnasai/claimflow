@@ -8,3 +8,13 @@ button:disabled { background: #595959; }
 a { color: #0b4f9c; }
 :focus-visible { outline: 3px solid #b35900; outline-offset: 2px; }
 .error { color: #a30000; font-weight: 600; }
+main.wide { max-width: 40rem; }
+select { display: block; width: 100%; padding: .6rem; font: inherit; border: 1px solid #595959; border-radius: 4px; background: #fff; color: inherit; }
+button + button { margin-left: .5rem; }
+ul.cards { list-style: none; padding: 0; }
+ul.cards li { border: 1px solid #595959; border-radius: 4px; padding: .5rem 1rem; margin-top: 1rem; overflow-wrap: anywhere; }
+ul.cards h2 { margin: .25rem 0; font-size: 1.1rem; }
+dl { margin: 0; overflow-wrap: anywhere; }
+dt { font-weight: 600; margin-top: .5rem; }
+dd { margin: 0; }
+.flag { color: #a30000; }

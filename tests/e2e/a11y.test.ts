@@ -77,7 +77,7 @@ test('AC-5 axe 0 serious/critical and no horizontal scroll at 360 px', async () 
   await page.fill('#email', 'employee@claimflow.test');
   await page.fill('#password', PW);
   await page.press('#password', 'Enter'); // keyboard-only submit
-  await page.getByRole('heading', { name: 'ClaimFlow' }).waitFor();
+  await page.getByRole('heading', { name: 'User detail' }).waitFor();
   await clean(page, 'signed in');
 });
 
@@ -92,7 +92,8 @@ test('AC-1/4 role routing and session restore; 401 routes to sign-in', async () 
     const session = page.waitForResponse((r) => r.url().endsWith('/api/auth/session'));
     await page.reload();
     assert.equal((await session).status(), 200);
-    await page.getByRole('heading', { name: 'ClaimFlow' }).waitFor();
+    await page.getByRole('heading', { name: expected.source.includes('.+') ? 'User detail' : 'Users' }).waitFor();
+    assert.equal(await page.evaluate(() => document.activeElement?.tagName), 'H1');
     await page.context().clearCookies();
     await page.evaluate(() => fetch('/api/users', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }));
     await page.goto(WEB + '/users');
@@ -158,4 +159,48 @@ test('AC-2/3 link to signed in < 2 min; error states', async () => {
     texts.push(await page.getByRole('status').innerText());
   }
   assert.equal(texts[0], texts[1]);
+});
+
+test('S11 users list and detail: cards, actions, denial, a11y at 360 px', async () => {
+  const admin = await apiAs('admin@claimflow.test', PW);
+  const post = (path: string, body: unknown) => fetch(`${WEB}/api/${path}`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-csrf-token': admin.csrf, cookie: admin.cookie }, body: JSON.stringify(body) });
+  const r = await post('users', { name: 'Zed Pending', email: 'zed@claimflow.test', role: 'employee' });
+  const zed = ((await r.json()) as { id: string }).id;
+  const page = await phone();
+  await page.goto(WEB + '/sign-in');
+  await page.fill('#email', 'admin@claimflow.test');
+  await page.fill('#password', PW);
+  await page.press('#password', 'Enter');
+  await page.getByRole('heading', { name: 'Users' }).waitFor();
+  assert.equal(await page.evaluate(() => document.activeElement?.tagName), 'H1');
+  assert.equal(await page.locator('table').count(), 0);
+  await page.locator('ul.cards li').nth(1).waitFor();
+  await clean(page, '/users');
+
+  await page.goto(`${WEB}/users/${zed}`);
+  await page.getByRole('button', { name: 'Resend link' }).waitFor();
+  await page.locator('label[for=manager]:visible').waitFor();
+  await clean(page, '/users/:id');
+  await page.focus('#manager');
+  await page.keyboard.press('Tab');
+  assert.equal(await page.evaluate(() => document.activeElement?.textContent), 'Resend link'); // keyboard reachable
+  await page.getByRole('button', { name: 'Deactivate' }).click();
+  assert.match(await page.getByRole('status').innerText(), /0 moved \/ 0 notified/);
+  assert.equal(await page.getByRole('button', { name: 'Resend link' }).count(), 0);
+
+  // last admin refusal is shown in an alert
+  const adminId = ((await (await fetch(`${WEB}/api/users`, { headers: { cookie: admin.cookie } })).json()) as { id: string; role: string }[]).find((u) => u.role === 'admin')!.id;
+  await page.goto(`${WEB}/users/${adminId}`);
+  await page.getByRole('button', { name: 'Deactivate' }).click();
+  assert.match(await page.getByRole('alert').innerText(), /last active admin/);
+
+  // non-admin: list denied, own record visible
+  const emp = await phone();
+  await emp.goto(WEB + '/sign-in');
+  await emp.fill('#email', 'employee@claimflow.test');
+  await emp.fill('#password', PW);
+  await emp.press('#password', 'Enter');
+  await emp.getByRole('heading', { name: 'User detail' }).waitFor();
+  await emp.goto(WEB + '/users');
+  assert.match(await emp.getByRole('alert').innerText(), /Access denied/);
 });
