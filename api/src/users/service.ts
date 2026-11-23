@@ -1,6 +1,6 @@
 import { Prisma, type PrismaClient, type Role } from '@prisma/client';
 import { HttpError } from '../middleware.js';
-import { withWrite, type Clock } from '../db.js';
+import { withWrite, type Clock, type Tx } from '../db.js';
 import { randomToken, sha256 } from '../auth/secrets.js';
 import { isManagerRole } from '../auth/authz.js';
 import type { Mailer } from '../mailer.js';
@@ -89,6 +89,18 @@ export async function resendLink(d: UserDeps, id: string) {
   }
 }
 
+// C-18. First active manager walking up from userId (bounded by the user count, so a cycle cannot loop).
+export async function nearestActiveAbove(tx: Tx, userId: string): Promise<string | null> {
+  let cur = (await tx.user.findUnique({ where: { id: userId }, select: { managerId: true } }))?.managerId ?? null;
+  for (let n = await tx.user.count(); cur && n >= 0; n--) {
+    const a = await tx.user.findUnique({ where: { id: cur }, select: { id: true, active: true, managerId: true } });
+    if (!a) break;
+    if (a.active) return a.id;
+    cur = a.managerId;
+  }
+  return null;
+}
+
 const MAIL_DEADLINE_MS = 15_000;
 
 // E-15. One transaction: update, sessions, then reassign last (ADR-18). Mail after commit under one 15 s deadline; failures never roll back (Q-9).
@@ -104,13 +116,7 @@ export async function deactivateUser(d: UserDeps, id: string, actorId: string) {
     const waiting = await claims.listWaitingOn(tx, id);
     let target: string | null = null;
     if (waiting.length) {
-      let cur = u.managerId;
-      for (let n = await tx.user.count(); cur && n >= 0; n--) {
-        const a = await tx.user.findUnique({ where: { id: cur } });
-        if (!a) break;
-        if (a.active) { target = a.id; break; }
-        cur = a.managerId;
-      }
+      target = await nearestActiveAbove(tx, id);
       if (!target) throw new HttpError(409, 'would_strand_claims', 'claims are waiting on this user and no active manager exists above them');
     }
     await tx.user.update({ where: { id }, data: { active: false } });

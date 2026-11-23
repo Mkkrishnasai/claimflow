@@ -1,9 +1,12 @@
 import { Prisma, type PrismaClient } from '@prisma/client';
 import { HttpError } from '../middleware.js';
-import { requireClaimant, requireEditable, requireReadable } from './access.js';
+import { managerChain, requireClaimant, requireEditable, requireReadable } from './access.js';
 import type { ReceiptStore } from './receipt-storage.js';
 import { withWrite, type Clock, type Tx } from '../db.js';
 import { moveClaim } from './status.js';
+import { canReadClaim } from '../auth/authz.js';
+import { nearestActiveAbove } from '../users/service.js';
+import { checkActor, decideApproval } from './approval.js';
 import { checkSubmit, pickDuplicates, SubmitRefused, utcToday, type Hit } from './policy.js';
 
 export interface ClaimDeps { prisma: PrismaClient; clock: Clock; receipts: ReceiptStore; beforeAppend?: () => void | Promise<void> /* test hook: fail the history insert */ }
@@ -303,5 +306,25 @@ export const withdrawClaim = (d: ClaimDeps, user: User, id: string, body: Record
   const now = d.clock();
   const ev = await moveClaim(tx, { claimId: id, action: 'withdraw', actorId: user!.id, reason, now, set: { approverId: null, submittedAt: null, updatedAt: now }, beforeAppend: d.beforeAppend });
   await tx.claimLine.updateMany({ where: { claimId: id }, data: { duplicateClaimId: null, duplicateBasis: null } });
+  return { claim: await reload(tx, id), ev };
+});
+
+// E-34. 404, then checkActor (403 self_approval / forbidden, 409), then routing; every check precedes the one moveClaim. No body field is read.
+export const approveClaim = (d: ClaimDeps, user: User, id: string) => withWrite(d.prisma, async (tx) => {
+  const c = await tx.claim.findUnique({ where: { id }, select: { id: true, claimantId: true, status: true, approverId: true, lines: { select: { amountCents: true } } } });
+  if (!c) throw new HttpError(404, 'not_found');
+  const me = user!.id;
+  const firstOf = async () => (await tx.claimEvent.findFirst({ where: { claimId: id, action: 'approve_first' }, orderBy: { seq: 'desc' }, select: { actorId: true } }))?.actorId ?? null;
+  const firstApproverId = c.status === 'approved' ? await firstOf() : null;
+  const readable = c.approverId !== me && c.claimantId !== me && canReadClaim(user!, c, await managerChain(tx, c.claimantId));
+  const err = checkActor(c, me, { readable, firstApproverId });
+  if (err) throw err;
+  if (c.status === 'approved' && firstApproverId === me) throw new HttpError(403, 'forbidden');
+  const second = c.status === 'submitted' ? await nearestActiveAbove(tx, me) : null;
+  const decision = decideApproval(c.status, c.lines.reduce((s, l) => s + l.amountCents, 0), second);
+  if (!decision) throw new HttpError(409, 'invalid_transition');
+  if (decision.action === 'approve_first' && (second === me || second === c.claimantId)) throw new HttpError(403, 'forbidden');
+  const now = d.clock();
+  const ev = await moveClaim(tx, { claimId: id, action: decision.action, actorId: me, now, set: { updatedAt: now, ...(decision.action === 'approve_first' ? { approverId: decision.approverId } : {}) }, beforeAppend: d.beforeAppend });
   return { claim: await reload(tx, id), ev };
 });
