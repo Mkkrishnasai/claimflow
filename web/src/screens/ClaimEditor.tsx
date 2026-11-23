@@ -3,17 +3,17 @@ import { api, ApiError } from '../api';
 import { formatCents, parseEuro } from '../money';
 
 interface Receipt { id: string; originalName: string | null }
-interface Line { key: string; id?: string; date: string; categoryCode: string; amount: string; description: string; receipts: Receipt[]; err: string; amountErr: string }
+interface Line { key: string; id?: string; date: string; categoryCode: string; amount: string; description: string; justification: string; stored: boolean; receipts: Receipt[]; err: string; amountErr: string }
 interface Category { code: string; label: string; limitCents: number }
-interface ServerLine { id: string; date: string; categoryCode: string; amountCents: number; description: string; receipts: Receipt[] }
+interface ServerLine { id: string; date: string; categoryCode: string; amountCents: number; description: string; justification: string | null; receipts: Receipt[] }
 interface ServerClaim { id: string; title: string; purpose: string; status: string; lines: ServerLine[] }
 
 const MAX = 10 * 1024 * 1024;
 const TYPES = ['image/jpeg', 'image/png', 'application/pdf'];
 let seq = 0;
-const blank = (categoryCode: string): Line => ({ key: `n${seq++}`, date: '', categoryCode, amount: '', description: '', receipts: [], err: '', amountErr: '' });
+const blank = (categoryCode: string): Line => ({ key: `n${seq++}`, date: '', categoryCode, amount: '', description: '', justification: '', stored: false, receipts: [], err: '', amountErr: '' });
 const euro = (c: number) => formatCents(c).slice(4);
-const fromServer = (l: ServerLine): Line => ({ key: l.id, id: l.id, date: l.date, categoryCode: l.categoryCode, amount: euro(l.amountCents), description: l.description, receipts: l.receipts, err: '', amountErr: '' });
+const fromServer = (l: ServerLine): Line => ({ key: l.id, id: l.id, date: l.date, categoryCode: l.categoryCode, amount: euro(l.amountCents), description: l.description, justification: l.justification ?? '', stored: !!l.justification, receipts: l.receipts, err: '', amountErr: '' });
 const reason = (e: unknown) => (e instanceof ApiError ? e.reason ?? e.code : 'Request failed.');
 
 export default function ClaimEditor({ id, go }: { id: string; go: (to: string) => void }) {
@@ -55,7 +55,7 @@ export default function ClaimEditor({ id, go }: { id: string; go: (to: string) =
     const checked = lines.map((l) => ({ l, cents: parseEuro(l.amount) }));
     setLines((ls) => ls.map((l) => ({ ...l, err: '', amountErr: parseEuro(l.amount) === null ? 'Enter an amount from 0.01 to 10000.00, such as 12.50' : '' })));
     if (checked.some((x) => x.cents === null)) return;
-    const body = (l: Line, cents: number) => ({ date: l.date, categoryCode: l.categoryCode, amountCents: cents, description: l.description });
+    const body = (l: Line, cents: number) => ({ date: l.date, categoryCode: l.categoryCode, amountCents: cents, description: l.description, justification: l.justification.trim() || null });
     try {
       if (!id) {
         const c = await api<ServerClaim>('/claims', 'POST', { title, purpose, lines: checked.map((x) => body(x.l, x.cents!)) });
@@ -107,7 +107,11 @@ export default function ClaimEditor({ id, go }: { id: string; go: (to: string) =
           <input id="title" required maxLength={120} value={title} onChange={(e) => setTitle(e.target.value)} />
           <label htmlFor="purpose">Purpose</label>
           <textarea id="purpose" required minLength={10} maxLength={2000} rows={3} value={purpose} onChange={(e) => setPurpose(e.target.value)} />
-          {lines.map((l, i) => (
+          {lines.map((l, i) => {
+            const limit = cats.find((c) => c.code === l.categoryCode)?.limitCents ?? 0;
+            const cents = parseEuro(l.amount);
+            const over = cents !== null && cents > limit;
+            return (
             <fieldset key={l.key}>
               <legend>Line {i + 1}</legend>
               <label htmlFor={`date-${l.key}`}>Date</label>
@@ -121,6 +125,12 @@ export default function ClaimEditor({ id, go }: { id: string; go: (to: string) =
               {l.amountErr && <p id={`amt-err-${l.key}`} className="error">{l.amountErr}</p>}
               <label htmlFor={`desc-${l.key}`}>Description</label>
               <input id={`desc-${l.key}`} required maxLength={200} value={l.description} onChange={(e) => patch(l.key, { description: e.target.value })} />
+              {(over || l.stored) && (
+                <>
+                  <label htmlFor={`just-${l.key}`}>{`Justification (at least 20 characters, required above ${formatCents(limit)})`}</label>
+                  <textarea id={`just-${l.key}`} maxLength={500} rows={3} value={l.justification} onChange={(e) => patch(l.key, { justification: e.target.value })} />
+                </>
+              )}
               {l.id ? (
                 <>
                   <ul className="plain">
@@ -135,7 +145,8 @@ export default function ClaimEditor({ id, go }: { id: string; go: (to: string) =
               {l.err && <p role="alert" className="error">{l.err}</p>}
               {lines.length > 1 && <button type="button" onClick={() => dropLine(l)}>Remove line</button>}
             </fieldset>
-          ))}
+            );
+          })}
           <p><button type="button" onClick={() => setLines((ls) => [...ls, blank(cats[0]?.code ?? '')])}>Add line</button></p>
           <button type="submit">Save claim</button>
         </form>

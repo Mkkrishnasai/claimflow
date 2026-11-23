@@ -1,6 +1,7 @@
 export interface SessionUser { id: string; name: string; role: string; csrfToken: string }
+export interface Failure { code: string; lineId?: string; position?: number; message: string }
 export class ApiError extends Error {
-  constructor(public status: number, public code: string, public reason?: string) { super(code); }
+  constructor(public status: number, public code: string, public reason?: string, public failures?: Failure[]) { super(code); }
 }
 
 let csrf: string | null = null; // session CSRF token, kept in memory (arch ADR-14)
@@ -22,7 +23,7 @@ export async function api<T = unknown>(path: string, method = 'GET', body?: unkn
   const data = res.status === 204 ? null : await res.json().catch(() => null);
   if (!res.ok) {
     if (res.status === 401 && !opts.quiet401) { setCsrf(null); on401(); }
-    throw new ApiError(res.status, data?.error ?? 'error', data?.reason);
+    throw new ApiError(res.status, data?.error ?? 'error', data?.reason, Array.isArray(data?.failures) ? data.failures : undefined);
   }
   return data as T;
 }
