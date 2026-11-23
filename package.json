@@ -9,6 +9,7 @@
   "scripts": {
     "start": "node scripts/start.mjs",
     "test:unit": "vitest run",
+    "test:api": "DATABASE_URL=file:./test-api.db sh -c 'rm -f test-api.db prisma/test-api.db; prisma migrate deploy 1>&2 && node --import tsx --test --test-concurrency=1 tests/api/*.test.ts'",
     "test:e2e": "node --import tsx --test --test-concurrency=1 tests/e2e/*.test.ts",
     "start:api:test": "NODE_ENV=test DATABASE_URL=file:./test.db sh -c 'prisma migrate deploy 1>&2 && exec tsx api/src/server.ts'",
     "postinstall": "prisma generate",
@@ -21,12 +22,16 @@
     "bcryptjs": "^3.0.3",
     "dotenv": "^18.0.10",
     "express": "^5.3.0",
+    "nodemailer": "^10.6.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.13.0",
+    "@playwright/test": "1.62.0",
     "@types/express": "^5.0.6",
     "@types/node": "^26.6.6",
+    "@types/nodemailer": "^8.0.2",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.3.4",

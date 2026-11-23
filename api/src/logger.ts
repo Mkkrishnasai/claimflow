@@ -6,7 +6,7 @@ export interface Logger {
   error(msg: string, fields?: Record<string, unknown>): void;
 }
 
-const SENSITIVE = new Set(['password', 'receipt', 'bankaccount', 'sortcode', 'authorization', 'cookie', 'token']);
+const SENSITIVE = new Set(['password', 'receipt', 'bankaccount', 'sortcode', 'authorization', 'cookie', 'token', 'sid', 'csrftoken', 'x-csrf-token', 'passwordhash', 'tokenhash', 'idhash']);
 
 // Stack frames only; the header (message, may hold newlines) is dropped. Fails closed to [].
 // Limit: V8 builds the header at construction, so we try String(err) plus constructor-name and 'Error' headers;

@@ -1,11 +1,20 @@
-import express, { type Express } from 'express';
+import express, { Router, type Express } from 'express';
+import type { PrismaClient } from '@prisma/client';
+import type { Clock } from './db.js';
+import { authRoutes } from './auth/routes.js';
+import { verifyPassword } from './auth/secrets.js';
+import { authenticate } from './auth/session.js';
 import { createLogger, type Logger } from './logger.js';
 import { errorHandler, notFound, requestLog } from './middleware.js';
-import { testRouter } from './test-routes.js';
+import { userRoutes } from './users/routes.js';
+import type { ClaimStore } from './claims-port.js';
+import type { Mailer } from './mailer.js';
+import { claimTestRoutes, testRouter } from './test-routes.js';
 
 export interface AppOptions {
   testRoutes?: boolean;
   log?: Logger;
+  deps?: { prisma: PrismaClient; clock: Clock; mailer: Mailer; publicBaseUrl: string; verify?: typeof verifyPassword; claims?: ClaimStore };
 }
 
 export function createApp(opts: AppOptions = {}): Express {
@@ -14,7 +23,17 @@ export function createApp(opts: AppOptions = {}): Express {
   app.get('/health', (_req, res) => {
     res.status(200).json({ status: 'ok' });
   });
-  if (opts.testRoutes) app.use(testRouter);
+  if (opts.deps) {
+    const { prisma, clock } = opts.deps;
+    const log = opts.log ?? createLogger();
+    const api = Router();
+    api.use(authenticate(prisma, clock), express.json({ limit: '10kb' }), authRoutes(prisma, clock, opts.deps.verify, { mailer: opts.deps.mailer, publicBaseUrl: opts.deps.publicBaseUrl, log }), userRoutes(opts.deps));
+    app.use('/api', api);
+  }
+  if (opts.testRoutes) {
+    app.use(testRouter);
+    if (opts.deps) app.use(claimTestRoutes(opts.deps.prisma, opts.deps.clock));
+  }
   app.use(notFound);
   app.use(errorHandler);
   return app;

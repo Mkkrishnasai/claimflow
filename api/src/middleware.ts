@@ -2,6 +2,13 @@ import { randomUUID } from 'node:crypto';
 import type { ErrorRequestHandler, RequestHandler } from 'express';
 import { serializeError, type Logger } from './logger.js';
 
+export class HttpError extends Error {
+  constructor(public readonly status: number, public readonly code: string, public readonly reason?: string) {
+    super(code);
+    this.name = 'HttpError';
+  }
+}
+
 export const requestLog = (log: Logger): RequestHandler => (req, res, next) => {
   const requestId = randomUUID();
   const start = process.hrtime.bigint();
@@ -15,6 +22,7 @@ export const requestLog = (log: Logger): RequestHandler => (req, res, next) => {
       path: req.originalUrl.split('?')[0],
       status,
       duration_ms: Number(process.hrtime.bigint() - start) / 1e6,
+      ...res.locals.logFields, // auth events etc. (ADR-5): fields on the one line, never extra lines
       ...(status >= 500 && 'error' in res.locals ? { error: serializeError(res.locals.error) } : {}),
     });
   });
@@ -32,6 +40,11 @@ export const errorHandler: ErrorRequestHandler = (err, _req, res, _next) => {
     res.locals.error = err;
     res.statusCode = 500;
     res.destroy();
+    return;
+  }
+  if (err instanceof HttpError) {
+    if (err.status >= 500) res.locals.error = err;
+    res.status(err.status).json(err.status < 500 && err.reason ? { error: err.code, reason: err.reason } : { error: err.code });
     return;
   }
   const s = err?.status ?? err?.statusCode;
