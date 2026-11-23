@@ -92,7 +92,7 @@ export async function resendLink(d: UserDeps, id: string) {
 const MAIL_DEADLINE_MS = 15_000;
 
 // E-15. One transaction: update, sessions, then reassign last (ADR-18). Mail after commit under one 15 s deadline; failures never roll back (Q-9).
-export async function deactivateUser(d: UserDeps, id: string) {
+export async function deactivateUser(d: UserDeps, id: string, actorId: string) {
   const claims = d.claims ?? NoClaimStore;
   const { moved, mails } = await withWrite(d.prisma, async (tx) => {
     const u = await tx.user.findUnique({ where: { id } });
@@ -118,7 +118,7 @@ export async function deactivateUser(d: UserDeps, id: string) {
     const mails: { to: string | null; claimId: string }[] = [];
     if (target) {
       for (const c of waiting) mails.push({ to: (await tx.user.findUnique({ where: { id: c.claimantId }, select: { email: true } }))?.email ?? null, claimId: c.id });
-      await claims.reassign(tx, waiting.map((c) => c.id), target);
+      await claims.reassign(tx, waiting.map((c) => c.id), target, actorId);
     }
     return { moved: waiting.length, mails };
   });

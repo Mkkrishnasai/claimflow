@@ -34,7 +34,7 @@ export const userRouteDefs = (d: UserDeps): RouteDef[] => [
   // E-15
   { method: 'post', path: '/users/:id/deactivate', data: 'user', write: true, handler: async (req, res) => {
     requireAdmin(req.user);
-    const r = await deactivateUser(d, req.params.id as string);
+    const r = await deactivateUser(d, req.params.id as string, req.user!.id);
     res.locals.logFields = { authEvent: 'deactivated', userId: r.id, reassignedClaims: r.reassignedClaims };
     res.json(r);
   } },
