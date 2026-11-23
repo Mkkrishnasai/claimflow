@@ -41,11 +41,16 @@ type ReceiptRow = { id: string; mime: string; sizeBytes: number; originalName: s
 type EventRow = { seq: number; action: string; fromStatus: string; toStatus: string; reason: string | null; at: Date; actor: { id: string; name: string } };
 type ClaimRow = { id: string; claimantId: string; title: string; purpose: string; status: string; approverId: string | null; claimant?: { id: string; name: string }; createdAt: Date; updatedAt: Date; submittedAt: Date | null; lines: LineRow[]; events?: EventRow[] };
 
+type FlagLine = { amountCents: number; categoryCode: string; limitCents: number | null; duplicateClaimId?: string | null; duplicateBasis?: string | null };
+export const lineFlags = (l: FlagLine, limits: ReadonlyMap<string, number>) => ({
+  overLimit: l.amountCents > (l.limitCents ?? limits.get(l.categoryCode) ?? 0),
+  duplicate: l.duplicateClaimId && l.duplicateBasis ? { claimId: l.duplicateClaimId, basis: l.duplicateBasis } : null,
+});
+
 export function toClaimJson(c: ClaimRow, limits: ReadonlyMap<string, number>) {
   const lines = [...c.lines].sort((a, b) => a.position - b.position).map((l) => ({
     id: l.id, position: l.position, date: l.date, categoryCode: l.categoryCode, amountCents: l.amountCents, description: l.description, justification: l.justification,
-    limitCents: l.limitCents, overLimit: l.amountCents > (l.limitCents ?? limits.get(l.categoryCode) ?? 0),
-    duplicate: l.duplicateClaimId && l.duplicateBasis ? { claimId: l.duplicateClaimId, basis: l.duplicateBasis } : null, receipts: (l.receipts ?? []).map((r) => ({ id: r.id, mime: r.mime, sizeBytes: r.sizeBytes, originalName: r.originalName, uploadedAt: r.uploadedAt })),
+    limitCents: l.limitCents, ...lineFlags(l, limits), receipts: (l.receipts ?? []).map((r) => ({ id: r.id, mime: r.mime, sizeBytes: r.sizeBytes, originalName: r.originalName, uploadedAt: r.uploadedAt })),
   }));
   const { id, claimantId, title, purpose, status, approverId, createdAt, updatedAt, submittedAt } = c;
   return { id, claimantId, claimant: c.claimant ? { id: c.claimant.id, name: c.claimant.name } : undefined, title, purpose, status, approverId, totalCents: lines.reduce((s, l) => s + l.amountCents, 0), lines, history: [...(c.events ?? [])].sort((a, b) => a.seq - b.seq).map((e) => ({ seq: e.seq, action: e.action, fromStatus: e.fromStatus, toStatus: e.toStatus, reason: e.reason, at: e.at, actor: { id: e.actor.id, name: e.actor.name } })), createdAt, updatedAt, submittedAt };
@@ -71,21 +76,47 @@ export async function createClaim(d: ClaimDeps, claimantId: string, body: Record
   });
 }
 
-// E-20
-export async function listMine(d: ClaimDeps, userId: string, q: { limit?: unknown; offset?: unknown }) {
+export function parsePage(q: { limit?: unknown; offset?: unknown }) {
   const num = (v: unknown, def: number, min: number, max: number, f: string) => {
     if (v === undefined) return def;
     const n = typeof v === 'string' && /^\d{1,9}$/.test(v) ? Number(v) : NaN;
     if (!(n >= min && n <= max)) throw bad(`${f} must be an integer from ${min} to ${max}`);
     return n;
   };
-  const take = num(q.limit, 50, 1, 100, 'limit');
-  const skip = num(q.offset, 0, 0, 1_000_000_000, 'offset');
+  return { take: num(q.limit, 50, 1, 100, 'limit'), skip: num(q.offset, 0, 0, 1_000_000_000, 'offset') };
+}
+
+// E-20
+export async function listMine(d: ClaimDeps, userId: string, q: { limit?: unknown; offset?: unknown }) {
+  const { take, skip } = parsePage(q);
   const rows = await d.prisma.claim.findMany({
     where: { claimantId: userId }, orderBy: [{ updatedAt: 'desc' }, { id: 'asc' }], take, skip,
     select: { id: true, title: true, status: true, updatedAt: true, lines: { select: { amountCents: true } } },
   });
   return rows.map((r) => ({ id: r.id, title: r.title, status: r.status, totalCents: r.lines.reduce((s, l) => s + l.amountCents, 0), lineCount: r.lines.length, updatedAt: r.updatedAt }));
+}
+
+// E-33: filtered by the session user only; one claim query via (approverId, status) plus one category lookup.
+export async function listApprovals(d: ClaimDeps, userId: string, q: { limit?: unknown; offset?: unknown }) {
+  const { take, skip } = parsePage(q);
+  const [rows, cats] = await Promise.all([
+    d.prisma.claim.findMany({
+      where: { approverId: userId, status: { in: ['submitted', 'approved'] } }, orderBy: [{ submittedAt: 'asc' }, { id: 'asc' }], take, skip,
+      select: {
+        id: true, title: true, status: true, submittedAt: true, claimant: { select: { id: true, name: true } },
+        lines: { orderBy: { position: 'asc' }, select: { position: true, description: true, amountCents: true, categoryCode: true, limitCents: true, duplicateClaimId: true, duplicateBasis: true, receipts: { select: { id: true, mime: true, originalName: true } } } },
+      },
+    }),
+    d.prisma.category.findMany({ select: { code: true, limitCents: true } }),
+  ]);
+  const limits = new Map(cats.map((x) => [x.code, x.limitCents]));
+  return rows.map((r) => {
+    const lines = r.lines.map((l) => ({ position: l.position, description: l.description, amountCents: l.amountCents, ...lineFlags(l, limits), receipts: l.receipts }));
+    return {
+      id: r.id, title: r.title, claimant: r.claimant, status: r.status, stage: r.status === 'submitted' ? 'first' : 'second', submittedAt: r.submittedAt,
+      totalCents: lines.reduce((s, l) => s + l.amountCents, 0), overLimitCount: lines.filter((l) => l.overLimit).length, duplicateCount: lines.filter((l) => l.duplicate).length, lines,
+    };
+  });
 }
 
 // E-22. One query (no N+1); 404 before 403 (architecture section 6).
