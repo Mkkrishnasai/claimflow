@@ -1,3 +1,6 @@
+import { isAbsolute, relative, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 export class ConfigError extends Error {
   constructor(public readonly variable: string, reason = 'is required') {
     super(`${variable} ${reason}`);
@@ -8,6 +11,7 @@ export class ConfigError extends Error {
 export interface Config {
   readonly databaseUrl: string;
   readonly publicBaseUrl: string;
+  readonly receiptsDir: string;
   readonly smtp: { readonly host: string; readonly port: number; readonly user?: string; readonly pass?: string };
 }
 
@@ -35,5 +39,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   } catch {
     throw new ConfigError('PUBLIC_BASE_URL', 'must be an http(s) URL');
   }
-  return Object.freeze({ databaseUrl, publicBaseUrl, smtp: Object.freeze({ host, port, user, pass }) });
+  const repo = resolve(fileURLToPath(import.meta.url), '../../..');
+  const receiptsDir = resolve(repo, get('RECEIPTS_DIR') ?? 'data/receipts');
+  const inWeb = relative(resolve(repo, 'web'), receiptsDir);
+  if (inWeb === '' || (!inWeb.startsWith('..') && !isAbsolute(inWeb))) throw new ConfigError('RECEIPTS_DIR', 'must be outside web/');
+  return Object.freeze({ databaseUrl, publicBaseUrl, receiptsDir, smtp: Object.freeze({ host, port, user, pass }) });
 }

@@ -7,6 +7,7 @@ import { PrismaClient } from '@prisma/client';
 import { createApp } from '../../api/src/app.js';
 import { createLogger } from '../../api/src/logger.js';
 import { claimTestRouteDefs } from '../../api/src/test-routes.js';
+import { claimRouteDefs } from '../../api/src/claims/routes.js';
 import { userRouteDefs } from '../../api/src/users/routes.js';
 
 const PW = 'correct horse battery';
@@ -41,6 +42,7 @@ const POS: Record<string, string> = { own: 'mgr', d1: 'd1', d2: 'd2', d3: 'd3', 
 
 before(async () => {
   const passwordHash = await bcrypt.hash(PW, 4);
+  await prisma.claimEvent.deleteMany(); await prisma.receipt.deleteMany(); await prisma.claimLine.deleteMany(); await prisma.claim.deleteMany();
   await prisma.oneTimeToken.deleteMany();
   await prisma.session.deleteMany();
   await prisma.loginAttempt.deleteMany();
@@ -58,45 +60,73 @@ before(async () => {
 });
 after(async () => {
   srv.close(); srv2.close();
+  await prisma.claimLine.deleteMany(); await prisma.claim.deleteMany();
   await prisma.session.deleteMany();
   await prisma.user.updateMany({ data: { managerId: null } }); await prisma.user.deleteMany(); await prisma.$disconnect();
 });
 
 const ROLE_USER = { employee: 'emp', manager: 'mgr', finance: 'fin', admin: 'adm' } as const;
 
-test('AC-1 claim read matrix: 4 roles x positions x status, 0 deviations', async () => {
-  await call(sessions.adm, 'POST', '/__test/fixtures/reset');
+const ALL_STATUSES = ['draft', 'submitted', 'approved', 'rejected', 'ready_to_pay', 'paid'];
+
+// Same cells for the fixture route and the production route; `mk` creates a claim and returns its id.
+// `paid` rows are undeletable by trigger, so the DB-backed run skips it (canReadClaim treats it like approved; the fixture run covers it).
+async function matrix(mk: (claimantId: string, status: string) => Promise<string>, path: (id: string) => string, STATUSES6 = ALL_STATUSES) {
   const ids: Record<string, string> = {};
-  for (const [cell, claimant] of Object.entries(POS))
-    for (const status of ['submitted', 'draft']) {
-      const r = await call(sessions.adm, 'POST', '/__test/fixtures/claims', { claimantId: claimant, status });
-      assert.equal(r.status, 201);
-      ids[`${cell}/${status}`] = ((await r.json()) as { id: string }).id;
-    }
-  for (const status of ['submitted', 'draft']) { // own claim of each non-manager requester
-    for (const rid of ['emp', 'fin', 'adm']) {
-      const r = await call(sessions.adm, 'POST', '/__test/fixtures/claims', { claimantId: rid, status });
-      ids[`own-${rid}/${status}`] = ((await r.json()) as { id: string }).id;
-    }
-  }
+  for (const [cell, claimant] of Object.entries(POS)) for (const status of STATUSES6) ids[`${cell}/${status}`] = await mk(claimant, status);
+  for (const rid of ['emp', 'fin', 'adm']) for (const status of STATUSES6) ids[`own-${rid}/${status}`] = await mk(rid, status);
   let n = 0;
   for (const role of ROLES) {
     const s = sessions[ROLE_USER[role]];
     const expect = (cell: string, status: string): number => {
       if (cell === 'own') return 200;
       if (role === 'manager') return cell === 'd1' || cell === 'd2' ? 200 : 403;
-      if (role === 'finance') return status === 'submitted' ? 200 : 403;
+      if (role === 'finance') return status !== 'draft' ? 200 : 403;
       return 403;
     };
-    for (const cell of Object.keys(POS)) for (const status of ['submitted', 'draft']) {
-      // "own" for non-manager roles is the requester's own claim; manager's own is POS.own
+    for (const cell of Object.keys(POS)) for (const status of STATUSES6) {
       const id = cell === 'own' && role !== 'manager' ? ids[`own-${ROLE_USER[role]}/${status}`] : ids[`${cell}/${status}`];
-      const r = await call(s, 'GET', `/__test/claims/${id}`);
+      const r = await call(s, 'GET', path(id));
       assert.equal(r.status, expect(cell, status), `${role} ${cell} ${status}`);
+      if (r.status === 403) assert.deepEqual(await r.json(), { error: 'forbidden' });
       n++;
     }
   }
-  assert.equal(n, 4 * 7 * 2);
+  assert.equal(n, 4 * 7 * STATUSES6.length);
+}
+
+test('AC-1 claim read matrix (fixture route): 4 roles x positions x 6 statuses, 0 deviations', async () => {
+  await call(sessions.adm, 'POST', '/__test/fixtures/reset');
+  await matrix(async (claimantId, status) => {
+    const r = await call(sessions.adm, 'POST', '/__test/fixtures/claims', { claimantId, status });
+    assert.equal(r.status, 201);
+    return ((await r.json()) as { id: string }).id;
+  }, (id) => `/__test/claims/${id}`);
+});
+
+const mkDb = async (claimantId: string, status: string) => {
+  const now = new Date();
+  return (await prisma.claim.create({ data: { claimantId, title: 't', purpose: 'purpose text', status: status as never, createdAt: now, updatedAt: now } })).id;
+};
+
+test('AC-1b claim read matrix (GET /api/claims/:id): same cells (paid excluded), 0 deviations', async () => {
+  await matrix(mkDb, (id) => `/api/claims/${id}`, ALL_STATUSES.filter((x) => x !== 'paid'));
+});
+
+test('GET /api/claims/:id: unknown id 404 for authenticated, 401 without session', async () => {
+  const r = await call(sessions.emp, 'GET', '/api/claims/nope');
+  assert.equal(r.status, 404);
+  assert.deepEqual(await r.json(), { error: 'not_found' });
+  assert.equal((await call(null, 'GET', '/api/claims/nope')).status, 401);
+});
+
+test('AC-4 manager change takes effect on the very next request (no cached grant)', async () => {
+  const id = await mkDb('d1', 'submitted'); // d1 -> mgr
+  assert.equal((await call(sessions.mgr, 'GET', `/api/claims/${id}`)).status, 200);
+  await prisma.user.update({ where: { id: 'd1' }, data: { managerId: 'OB' } });
+  try {
+    assert.equal((await call(sessions.mgr, 'GET', `/api/claims/${id}`)).status, 403);
+  } finally { await prisma.user.update({ where: { id: 'd1' }, data: { managerId: 'mgr' } }); }
 });
 
 test('AC-2 user-data routes, shapes, 403 vs 404', async () => {
@@ -123,7 +153,7 @@ test('AC-2 user-data routes, shapes, 403 vs 404', async () => {
 });
 
 const fill = (p: string) => p.replace(':id', 'x');
-const defs = () => [...userRouteDefs({} as never), ...claimTestRouteDefs({} as never)];
+const defs = () => [...userRouteDefs({} as never), ...claimTestRouteDefs({} as never), ...claimRouteDefs({} as never)].filter((d) => d.data !== 'none' || d.write);
 
 test('AC-3 every route: 401 without session, 403 csrf on writes with bad token', async () => {
   const before = await prisma.user.count();

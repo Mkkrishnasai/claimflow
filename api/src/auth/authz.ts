@@ -25,7 +25,7 @@ export const isManagerRole = (role: string): boolean => role === 'manager'; // Q
 
 // ADR-19: declarative route tables, so tests can enumerate every route and its data class.
 export interface RouteDef {
-  method: 'get' | 'post' | 'patch';
+  method: 'get' | 'post' | 'patch' | 'delete';
   path: string;
   data: 'none' | 'claim' | 'user';
   write: boolean;

@@ -6,6 +6,11 @@ import { verifyPassword } from './auth/secrets.js';
 import { authenticate } from './auth/session.js';
 import { createLogger, type Logger } from './logger.js';
 import { errorHandler, notFound, requestLog } from './middleware.js';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { receiptStorage, type ReceiptStore } from './claims/receipt-storage.js';
+import { claimRoutes, receiptUploadRoutes } from './claims/routes.js';
 import { userRoutes } from './users/routes.js';
 import type { ClaimStore } from './claims-port.js';
 import type { Mailer } from './mailer.js';
@@ -14,7 +19,7 @@ import { claimTestRoutes, testRouter } from './test-routes.js';
 export interface AppOptions {
   testRoutes?: boolean;
   log?: Logger;
-  deps?: { prisma: PrismaClient; clock: Clock; mailer: Mailer; publicBaseUrl: string; verify?: typeof verifyPassword; claims?: ClaimStore };
+  deps?: { prisma: PrismaClient; clock: Clock; mailer: Mailer; publicBaseUrl: string; verify?: typeof verifyPassword; claims?: ClaimStore; receipts?: ReceiptStore };
 }
 
 export function createApp(opts: AppOptions = {}): Express {
@@ -27,7 +32,11 @@ export function createApp(opts: AppOptions = {}): Express {
     const { prisma, clock } = opts.deps;
     const log = opts.log ?? createLogger();
     const api = Router();
-    api.use(authenticate(prisma, clock), express.json({ limit: '10kb' }), authRoutes(prisma, clock, opts.deps.verify, { mailer: opts.deps.mailer, publicBaseUrl: opts.deps.publicBaseUrl, log }), userRoutes(opts.deps));
+    api.use(authenticate(prisma, clock));
+    const receipts = opts.deps.receipts ?? receiptStorage(mkdtempSync(join(tmpdir(), 'receipts-'))); // fallback: tests only
+    api.use(receiptUploadRoutes({ prisma, clock, receipts })); // raw body: before every JSON parser
+    api.use('/claims', express.json({ limit: '100kb' })); // ADR-32: parsed first, so the 10 kb parser below skips it
+    api.use(express.json({ limit: '10kb' }), authRoutes(prisma, clock, opts.deps.verify, { mailer: opts.deps.mailer, publicBaseUrl: opts.deps.publicBaseUrl, log }), userRoutes(opts.deps), claimRoutes({ prisma, clock, receipts }));
     app.use('/api', api);
   }
   if (opts.testRoutes) {

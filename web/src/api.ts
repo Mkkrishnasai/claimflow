@@ -9,15 +9,16 @@ export const setCsrf = (t: string | null) => { csrf = t; };
 export const onUnauthorized = (f: () => void) => { on401 = f; };
 
 // Same-origin cookies; X-CSRF-Token on writes. Before sign-in the token comes from /api/auth/csrf (csrf_pre cookie).
-export async function api<T = unknown>(path: string, method = 'GET', body?: unknown, opts: { quiet401?: boolean } = {}): Promise<T> {
-  const headers: Record<string, string> = {};
-  if (body !== undefined) headers['content-type'] = 'application/json';
+export async function api<T = unknown>(path: string, method = 'GET', body?: unknown, opts: { quiet401?: boolean; headers?: Record<string, string> } = {}): Promise<T> {
+  const headers: Record<string, string> = { ...opts.headers };
+  const raw = body instanceof Blob; // receipt upload: raw bytes, no JSON content type
+  if (body !== undefined && !raw) headers['content-type'] = 'application/json';
   if (method !== 'GET') {
     let t = csrf;
     if (!t) t = ((await (await fetch('/api/auth/csrf', { credentials: 'same-origin' })).json()) as { csrfToken: string }).csrfToken;
     headers['x-csrf-token'] = t;
   }
-  const res = await fetch(`/api${path}`, { method, headers, credentials: 'same-origin', body: body === undefined ? undefined : JSON.stringify(body) });
+  const res = await fetch(`/api${path}`, { method, headers, credentials: 'same-origin', body: body === undefined ? undefined : raw ? body : JSON.stringify(body) });
   const data = res.status === 204 ? null : await res.json().catch(() => null);
   if (!res.ok) {
     if (res.status === 401 && !opts.quiet401) { setCsrf(null); on401(); }

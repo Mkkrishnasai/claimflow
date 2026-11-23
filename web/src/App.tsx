@@ -5,8 +5,11 @@ import SetPassword from './screens/SetPassword';
 import ForgotPassword from './screens/ForgotPassword';
 import UsersList from './screens/UsersList';
 import UserDetail from './screens/UserDetail';
+import ClaimsList from './screens/ClaimsList';
+import ClaimEditor from './screens/ClaimEditor';
+import ClaimDetail from './screens/ClaimDetail';
 
-export const homeFor = (u: SessionUser) => (u.role === 'admin' ? '/users' : `/users/${u.id}`);
+export const homeFor = (u: SessionUser) => (u.role === 'admin' ? '/users' : '/claims');
 
 export default function App() {
   const [path, setPath] = useState(location.pathname);
@@ -36,10 +39,15 @@ export default function App() {
   if (path === '/forgot-password') return <ForgotPassword />;
   if (!user) { queueMicrotask(() => go('/sign-in')); return null; }
   const detail = path.match(/^\/users\/([^/]+)$/);
+  const claim = path.match(/^\/claims\/([^/]+)$/);
+  const edit = path === '/claims/new' ? ['', ''] : path.match(/^\/claims\/([^/]+)\/edit$/);
   return (
     <main className="wide">
-      <button type="button" onClick={signOut}>Sign out</button>
-      {path === '/users' ? <UsersList /> : detail ? <UserDetail key={detail[1]} id={detail[1]} viewer={user} /> : <p role="alert">Page not found.</p>}
+      <nav aria-label="Main">
+        <a href="/claims">My claims</a> <a href={`/users/${user.id}`}>My account</a>
+        <button type="button" onClick={signOut}>Sign out</button>
+      </nav>
+      {path === '/claims' ? <ClaimsList /> : edit ? <ClaimEditor key={path} id={edit[1]} go={go} /> : claim && claim[1] !== 'new' ? <ClaimDetail key={path} id={claim[1]} viewer={user} go={go} /> : path === '/users' ? <UsersList /> : detail ? <UserDetail key={detail[1]} id={detail[1]} viewer={user} /> : <p role="alert">Page not found.</p>}
     </main>
   );
 }
