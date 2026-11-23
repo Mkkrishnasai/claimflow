@@ -5,7 +5,7 @@ import { mount, type RouteDef } from '../auth/authz.js';
 import { HttpError } from '../middleware.js';
 import { SubmitRefused } from './policy.js';
 import { sniff } from './receipt-storage.js';
-import { addLine, addReceiptRow, precheckReceipt, createClaim, deleteClaim, deleteLine, deleteReceipt, receiptForRead, editClaim, editLine, getClaim, listCategories, listMine, submitClaim, withdrawClaim, type ClaimDeps } from './service.js';
+import { addLine, addReceiptRow, precheckReceipt, createClaim, deleteClaim, deleteLine, deleteReceipt, receiptForRead, editClaim, editLine, getClaim, listApprovals, listCategories, listMine, submitClaim, withdrawClaim, type ClaimDeps } from './service.js';
 
 export const claimRouteDefs = (d: ClaimDeps): RouteDef[] => [
   // E-19
@@ -16,6 +16,11 @@ export const claimRouteDefs = (d: ClaimDeps): RouteDef[] => [
   { method: 'get', path: '/claims', data: 'claim', write: false, handler: async (req, res) => {
     if (!req.user) throw new HttpError(401, 'unauthenticated');
     res.json(await listMine(d, req.user.id, req.query));
+  } },
+  // E-33: the session user's pending approvals; never reads a user from the request
+  { method: 'get', path: '/approvals', data: 'claim', write: false, handler: async (req, res) => {
+    if (!req.user) throw new HttpError(401, 'unauthenticated');
+    res.json(await listApprovals(d, req.user.id, req.query));
   } },
   // E-21
   { method: 'post', path: '/claims', data: 'claim', write: true, handler: async (req, res) => {
