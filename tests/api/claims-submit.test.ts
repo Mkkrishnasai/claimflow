@@ -159,3 +159,51 @@ test('AC-7 throwing submit rolls back; concurrent submits give [200, 409] with o
   assert.deepEqual(rs.map((r) => r.status).sort(), [200, 409]);
   assert.equal((await events(id)).length, 1);
 });
+
+// ---- CLAIM-4-S3: duplicate flags ----
+const dupOf = async (id: string) => (await prisma.claimLine.findMany({ where: { claimId: id }, orderBy: { position: 'asc' } })).map((l) => [l.duplicateClaimId, l.duplicateBasis]);
+const withSha = async (id: string, sha: string, position?: number) => { for (const l of await prisma.claimLine.findMany({ where: { claimId: id, ...(position ? { position } : {}) } })) await prisma.receipt.create({ data: { lineId: l.id, claimId: id, uploadedById: 'emp', uploadedAt: new Date(0), storageKey: `k${l.id}`, sha256: sha, sizeBytes: 1, mime: 'image/png' } }); return id; };
+const T = { date: '2025-12-20', amountCents: 4000 };
+
+test('S3 AC-2/AC-4 receipt match across employees links the earlier claim; receipt beats match; submit is 200', async () => {
+  const early = await withSha(await mkc([{ amountCents: 3000 }], { status: 'submitted', submittedAt: new Date(100) }, 'lone'), 'same');
+  const later = await withSha(await mkc([{ amountCents: 3000 }], { status: 'approved', submittedAt: new Date(200) }, 'mgr'), 'same');
+  const tripleClaim = await mkc([{ ...T }], { status: 'submitted', submittedAt: new Date(50) });
+  const id = await withSha(await withSha(await mkc([{ amountCents: 3000 }, { ...T }]), 'same', 1), 'unique-1', 2);
+  const r = await sub(id);
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.j.lines[0].duplicate, { claimId: early, basis: 'receipt' });
+  assert.deepEqual(r.j.lines[1].duplicate, { claimId: tripleClaim, basis: 'match' });
+  assert.notEqual(later, early);
+});
+
+test('S3 AC-3 triple: other employee, own draft and same claim are not flagged', async () => {
+  await withSha(await mkc([{ ...T }], { status: 'submitted' }, 'lone'), 'o1');
+  await mkc([{ ...T }]); // own draft
+  const id = await mkc([{ ...T }, { ...T, description: 'same claim' }]);
+  const r = await sub(await withReceipts(id));
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.j.lines.map((l: J) => l.duplicate), [null, null]);
+});
+
+test('S3 AC-7 withdraw clears flags; resubmit recomputes after the match is gone', async () => {
+  const other = await mkc([{ ...T }], { status: 'submitted', submittedAt: new Date(1) });
+  const id = await withReceipts(await mkc([{ ...T }]));
+  assert.deepEqual((await sub(id)).j.lines[0].duplicate, { claimId: other, basis: 'match' });
+  const s = await signIn('emp');
+  assert.equal((await act(s, id, 'withdraw')).status, 200);
+  assert.deepEqual(await dupOf(id), [[null, null]]);
+  await prisma.claimLine.updateMany({ where: { claimId: other }, data: { amountCents: 4001 } });
+  await prisma.claimLine.updateMany({ where: { claimId: id }, data: { duplicateClaimId: 'stale', duplicateBasis: 'match' } });
+  assert.equal((await sub(id)).j.lines[0].duplicate, null);
+  assert.deepEqual(await dupOf(id), [[null, null]]);
+});
+
+test('S3 AC-5 the link carries only an id and the other claim stays 403', async () => {
+  const a = await withSha(await mkc([{ amountCents: 3000 }], { status: 'submitted', submittedAt: new Date(1) }, 'lone'), 'sh');
+  const b = await withSha(await mkc([{ amountCents: 3000 }]), 'sh');
+  const r = await sub(b);
+  assert.deepEqual(Object.keys(r.j.lines[0].duplicate).sort(), ['basis', 'claimId']);
+  const s = await signIn('emp');
+  assert.equal((await fetch(`${base}/api/claims/${a}`, { headers: { cookie: s.cookie } })).status, 403);
+});

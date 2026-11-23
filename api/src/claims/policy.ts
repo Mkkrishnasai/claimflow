@@ -52,3 +52,18 @@ export function checkSubmit(c: PolicyClaim, limits: ReadonlyMap<string, number>,
   }
   return out;
 }
+
+// FR-4: pure pick. Receipt basis wins over triple; the earlier submittedAt wins among candidates, claim id breaks ties.
+export type Hit = { claimId: string; at: number };
+export type Dup = { claimId: string; basis: 'receipt' | 'match' };
+const earliest = (hits: Hit[]) => hits.reduce<Hit | null>((b, h) => (!b || h.at < b.at || (h.at === b.at && h.claimId < b.claimId) ? h : b), null);
+export function pickDuplicates(lines: { id: string; receiptHits: Hit[]; matchHits: Hit[] }[]): Map<string, Dup> {
+  const out = new Map<string, Dup>();
+  for (const l of lines) {
+    const r = earliest(l.receiptHits);
+    const m = r ? null : earliest(l.matchHits);
+    if (r) out.set(l.id, { claimId: r.claimId, basis: 'receipt' });
+    else if (m) out.set(l.id, { claimId: m.claimId, basis: 'match' });
+  }
+  return out;
+}

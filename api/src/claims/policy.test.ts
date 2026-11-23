@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest';
-import { checkSubmit, SubmitRefused, utcToday, type PolicyLine } from './policy.js';
+import { checkSubmit, pickDuplicates, SubmitRefused, utcToday, type PolicyLine } from './policy.js';
 
 const limits = new Map([['meals', 5000], ['accommodation', 20000]]);
 const T = '2026-06-30';
@@ -44,4 +44,13 @@ test('claim-level rules, no_lines, and ordering (claim first, then position, the
 test('SubmitRefused carries the 422 contract with a count reason', () => {
   const e = new SubmitRefused([{ code: 'no_lines', message: 'm' }], 'draft');
   expect([e.status, e.code, e.reason, e.extra]).toEqual([422, 'validation_failed', '1 problems', { failures: e.failures }]);
+});
+test('pickDuplicates: receipt beats match, earliest wins, ties by id, none stays unflagged', () => {
+  const m = pickDuplicates([
+    { id: 'a', receiptHits: [{ claimId: 'r', at: 9 }], matchHits: [{ claimId: 'm', at: 1 }] },
+    { id: 'b', receiptHits: [], matchHits: [{ claimId: 'late', at: 5 }, { claimId: 'early', at: 2 }] },
+    { id: 'c', receiptHits: [{ claimId: 'y', at: 3 }, { claimId: 'x', at: 3 }], matchHits: [] },
+    { id: 'd', receiptHits: [], matchHits: [] },
+  ]);
+  expect([...m]).toEqual([['a', { claimId: 'r', basis: 'receipt' }], ['b', { claimId: 'early', basis: 'match' }], ['c', { claimId: 'x', basis: 'receipt' }]]);
 });
