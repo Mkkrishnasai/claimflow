@@ -4,7 +4,7 @@ import { Router, type Request, type Response } from 'express';
 import { mount, type RouteDef } from '../auth/authz.js';
 import { HttpError } from '../middleware.js';
 import { sniff } from './receipt-storage.js';
-import { addLine, addReceiptRow, precheckReceipt, createClaim, deleteClaim, deleteLine, deleteReceipt, receiptForRead, editClaim, editLine, getClaim, listCategories, listMine, type ClaimDeps } from './service.js';
+import { addLine, addReceiptRow, precheckReceipt, createClaim, deleteClaim, deleteLine, deleteReceipt, receiptForRead, editClaim, editLine, getClaim, listCategories, listMine, submitClaim, withdrawClaim, type ClaimDeps } from './service.js';
 
 export const claimRouteDefs = (d: ClaimDeps): RouteDef[] => [
   // E-19
@@ -51,6 +51,17 @@ export const claimRouteDefs = (d: ClaimDeps): RouteDef[] => [
     const { size, handle } = await d.receipts.open(r.storageKey);
     res.set({ 'Content-Type': r.mime, 'Content-Length': String(size), 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'private, no-store', 'Content-Disposition': 'inline' });
     await pipeline(handle.createReadStream(), res);
+  } },
+  // E-31 / E-32: claimant-only; status is never read from the body
+  { method: 'post', path: '/claims/:id/submit', data: 'claim', write: true, handler: async (req, res) => {
+    const { claim, ev } = await submitClaim(d, req.user, req.params.id as string);
+    res.locals.logFields = { claimEvent: ev.action, claimId: claim.id, from: ev.from, to: ev.to };
+    res.json(claim);
+  } },
+  { method: 'post', path: '/claims/:id/withdraw', data: 'claim', write: true, handler: async (req, res) => {
+    const { claim, ev } = await withdrawClaim(d, req.user, req.params.id as string, req.body ?? {});
+    res.locals.logFields = { claimEvent: ev.action, claimId: claim.id, from: ev.from, to: ev.to };
+    res.json(claim);
   } },
   // E-30
   { method: 'delete', path: '/claims/:id/receipts/:receiptId', data: 'claim', write: true, handler: async (req, res) => {
