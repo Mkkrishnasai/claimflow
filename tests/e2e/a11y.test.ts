@@ -266,3 +266,59 @@ test('S9 claims list and editor: capture, amounts, a11y at 360 px, keyboard', as
   assert.match(await page.getByRole('alert').innerText(), /Claim not found/);
   assert.equal(await page.locator('input#title').count(), 0);
 });
+
+test('S10 claim detail: content, actions, no-manager, errors, a11y at 360 px', async () => {
+  const mk = async (email: string) => {
+    const s = await apiAs(email, PW);
+    const h = { 'content-type': 'application/json', 'x-csrf-token': s.csrf, cookie: s.cookie };
+    const cat = ((await (await fetch(`${WEB}/api/categories`, { headers: { cookie: s.cookie } })).json()) as { code: string; limitCents: number }[])[0];
+    const line = (amountCents: number) => ({ date: '2026-01-15', categoryCode: cat.code, amountCents, description: 'Taxi' });
+    const r = await fetch(`${WEB}/api/claims`, { method: 'POST', headers: h, body: JSON.stringify({ title: 'Detail trip', purpose: 'Client workshop in Berlin', lines: [line(100), line(cat.limitCents + 1)] }) });
+    return ((await r.json()) as { id: string }).id;
+  };
+  const signIn = async (email: string) => {
+    const p = await phone();
+    await p.goto(WEB + '/sign-in');
+    await p.fill('#email', email);
+    await p.fill('#password', PW);
+    await p.press('#password', 'Enter');
+    await p.getByRole('heading', { name: 'My claims' }).waitFor();
+    return p;
+  };
+  const id = await mk('employee@claimflow.test');
+  const page = await signIn('employee@claimflow.test');
+  await page.goto(`${WEB}/claims/${id}`);
+  await page.getByRole('heading', { name: 'Detail trip' }).waitFor();
+  assert.equal(await page.getByText('Over limit').count(), 1);
+  await page.getByRole('button', { name: 'Submit' }).waitFor();
+  assert.equal(await page.evaluate(() => document.activeElement?.tagName), 'H1');
+  assert.equal(await page.getByRole('button', { name: 'Delete' }).count(), 1);
+  for (const b of await page.locator('button, a.button').all()) {
+    const box = (await b.boundingBox())!;
+    assert.ok(box.width >= 44 && box.height >= 44, 'tap target >= 44px');
+  }
+  await clean(page, '/claims/:id', true);
+
+  await page.getByRole('button', { name: 'Submit' }).click();
+  await page.getByRole('button', { name: 'Withdraw' }).waitFor();
+  assert.equal(await page.getByRole('button', { name: 'Submit' }).count(), 0);
+  assert.equal(await page.getByRole('link', { name: 'Edit' }).count(), 0);
+  await page.getByRole('button', { name: 'Withdraw' }).click();
+  await page.getByRole('button', { name: 'Submit' }).waitFor();
+  assert.equal(await page.locator('ol.plain li').count(), 2);
+  assert.equal(await page.getByRole('button', { name: 'Delete' }).count(), 0); // has history
+
+  // no manager: Submit disabled with the explanation
+  const sm = await signIn('senior.manager@claimflow.test');
+  await sm.goto(`${WEB}/claims/${await mk('senior.manager@claimflow.test')}`);
+  await sm.getByText('You have no manager, so you cannot submit claims').waitFor();
+  assert.ok(await sm.getByRole('button', { name: 'Submit' }).isDisabled());
+
+  // not the claimant: read-only; unknown id
+  const fin = await signIn('finance@claimflow.test');
+  await fin.goto(`${WEB}/claims/${id}`);
+  await fin.getByRole('alert').waitFor();
+  assert.match(await fin.getByRole('alert').innerText(), /Access denied/);
+  await page.goto(`${WEB}/claims/nope`);
+  assert.match(await page.getByRole('alert').innerText(), /Claim not found/);
+});
