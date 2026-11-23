@@ -35,3 +35,18 @@ export async function recordFailure(tx: Tx, email: string, now: Date): Promise<{
 
 export const clearFailures = (tx: Tx, email: string) =>
   tx.loginAttempt.deleteMany({ where: { kind: KIND, email } });
+
+// E-7 / ADR-22. 3 forgot-password requests per normalised email per hour, known or unknown alike. Returns false when over quota (nothing is written then).
+const FORGOT_LIMIT = 3;
+const FORGOT_WINDOW_MS = 3_600_000;
+export async function takeForgotSlot(tx: Tx, email: string, now: Date): Promise<boolean> {
+  const k = { kind_email: { kind: 'forgot', email } };
+  const row = await tx.loginAttempt.findUnique({ where: k });
+  if (!row || now.getTime() >= row.windowStart.getTime() + FORGOT_WINDOW_MS) {
+    await tx.loginAttempt.upsert({ where: k, create: { kind: 'forgot', email, windowStart: now, count: 1 }, update: { windowStart: now, count: 1 } });
+    return true;
+  }
+  if (row.count >= FORGOT_LIMIT) return false;
+  await tx.loginAttempt.update({ where: k, data: { count: row.count + 1 } });
+  return true;
+}
