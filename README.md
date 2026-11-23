@@ -47,6 +47,13 @@ Never commit `.env`; it is git-ignored. `npm start` runs preflight, migrates, se
 
 Stop with Ctrl-C (SIGINT; SIGTERM and SIGHUP behave the same): every service the command started is stopped and it exits 0. During the migrate/seed steps, which run synchronously before any service starts, a signal sent only to the `npm start` process waits for the step to finish; Ctrl-C in a terminal also reaches the step and aborts it.
 
+## Configuration and tests
+
+- `PUBLIC_BASE_URL` (in `.env`): origin used in set-password and reset links emailed to users, e.g. `http://127.0.0.1:5173`.
+- `npm run test:api`: API tests against a throwaway SQLite database.
+- `npx playwright install chromium`: one-off download needed before `npm run test:e2e` (browser and accessibility tests).
+- Demo browser: use Chromium or Firefox for manual demos; the accessibility tests run on Chromium at 360x740.
+
 ## Ports
 
 | Port | Service |

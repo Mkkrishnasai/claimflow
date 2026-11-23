@@ -3,6 +3,8 @@ import { api, ApiError, onUnauthorized, setCsrf, type SessionUser } from './api'
 import SignIn from './screens/SignIn';
 import SetPassword from './screens/SetPassword';
 import ForgotPassword from './screens/ForgotPassword';
+import UsersList from './screens/UsersList';
+import UserDetail from './screens/UserDetail';
 
 export const homeFor = (u: SessionUser) => (u.role === 'admin' ? '/users' : `/users/${u.id}`);
 
@@ -33,6 +35,11 @@ export default function App() {
   if (path === '/set-password' || path === '/reset-password') return <SetPassword go={go} />;
   if (path === '/forgot-password') return <ForgotPassword />;
   if (!user) { queueMicrotask(() => go('/sign-in')); return null; }
-  // ponytail: S11 replaces this placeholder with the users screens
-  return <main><h1>ClaimFlow</h1><button type="button" onClick={signOut}>Sign out</button></main>;
+  const detail = path.match(/^\/users\/([^/]+)$/);
+  return (
+    <main className="wide">
+      <button type="button" onClick={signOut}>Sign out</button>
+      {path === '/users' ? <UsersList /> : detail ? <UserDetail key={detail[1]} id={detail[1]} viewer={user} /> : <p role="alert">Page not found.</p>}
+    </main>
+  );
 }
