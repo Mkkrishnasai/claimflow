@@ -22,6 +22,7 @@ export const requestLog = (log: Logger): RequestHandler => (req, res, next) => {
       path: req.originalUrl.split('?')[0],
       status,
       duration_ms: Number(process.hrtime.bigint() - start) / 1e6,
+      ...res.locals.logFields, // auth events etc. (ADR-5): fields on the one line, never extra lines
       ...(status >= 500 && 'error' in res.locals ? { error: serializeError(res.locals.error) } : {}),
     });
   });
