@@ -29,7 +29,7 @@ export class FixtureClaimStore implements ClaimStore {
   reset(): void { this.rows.clear(); }
   async get(_tx: Tx, id: string) { return this.rows.get(id) ?? null; }
   async listWaitingOn(_tx: Tx, userId: string) {
-    return [...this.rows.values()].filter((c) => c.approverId === userId && c.status === 'submitted');
+    return [...this.rows.values()].filter((c) => c.approverId === userId && (c.status === 'submitted' || c.status === 'approved'));
   }
   async reassign(_tx: Tx, ids: string[], approverId: string, _actorId?: string) {
     for (const id of ids) { const c = this.rows.get(id); if (c) c.approverId = approverId; }

@@ -39,7 +39,7 @@ export function parseLine(raw: unknown, categories: ReadonlySet<string>) {
 type LineRow = { id: string; position: number; date: string; categoryCode: string; amountCents: number; description: string; justification: string | null; limitCents: number | null; duplicateClaimId?: string | null; duplicateBasis?: string | null; receipts?: ReceiptRow[] };
 type ReceiptRow = { id: string; mime: string; sizeBytes: number; originalName: string | null; uploadedAt: Date };
 type EventRow = { seq: number; action: string; fromStatus: string; toStatus: string; reason: string | null; at: Date; actor: { id: string; name: string } };
-type ClaimRow = { id: string; claimantId: string; title: string; purpose: string; status: string; approverId: string | null; createdAt: Date; updatedAt: Date; submittedAt: Date | null; lines: LineRow[]; events?: EventRow[] };
+type ClaimRow = { id: string; claimantId: string; title: string; purpose: string; status: string; approverId: string | null; claimant?: { id: string; name: string }; createdAt: Date; updatedAt: Date; submittedAt: Date | null; lines: LineRow[]; events?: EventRow[] };
 
 export function toClaimJson(c: ClaimRow, limits: ReadonlyMap<string, number>) {
   const lines = [...c.lines].sort((a, b) => a.position - b.position).map((l) => ({
@@ -48,7 +48,7 @@ export function toClaimJson(c: ClaimRow, limits: ReadonlyMap<string, number>) {
     duplicate: l.duplicateClaimId && l.duplicateBasis ? { claimId: l.duplicateClaimId, basis: l.duplicateBasis } : null, receipts: (l.receipts ?? []).map((r) => ({ id: r.id, mime: r.mime, sizeBytes: r.sizeBytes, originalName: r.originalName, uploadedAt: r.uploadedAt })),
   }));
   const { id, claimantId, title, purpose, status, approverId, createdAt, updatedAt, submittedAt } = c;
-  return { id, claimantId, title, purpose, status, approverId, totalCents: lines.reduce((s, l) => s + l.amountCents, 0), lines, history: [...(c.events ?? [])].sort((a, b) => a.seq - b.seq).map((e) => ({ seq: e.seq, action: e.action, fromStatus: e.fromStatus, toStatus: e.toStatus, reason: e.reason, at: e.at, actor: { id: e.actor.id, name: e.actor.name } })), createdAt, updatedAt, submittedAt };
+  return { id, claimantId, claimant: c.claimant ? { id: c.claimant.id, name: c.claimant.name } : undefined, title, purpose, status, approverId, totalCents: lines.reduce((s, l) => s + l.amountCents, 0), lines, history: [...(c.events ?? [])].sort((a, b) => a.seq - b.seq).map((e) => ({ seq: e.seq, action: e.action, fromStatus: e.fromStatus, toStatus: e.toStatus, reason: e.reason, at: e.at, actor: { id: e.actor.id, name: e.actor.name } })), createdAt, updatedAt, submittedAt };
 }
 
 // E-19
@@ -66,7 +66,7 @@ export async function createClaim(d: ClaimDeps, claimantId: string, body: Record
     const codes = new Set(cats.map((c) => c.code));
     const lines = raw.map((l, i) => ({ position: i + 1, ...parseLine(l, codes) }));
     const now = d.clock();
-    const c = await tx.claim.create({ data: { claimantId, title, purpose, status: 'draft', createdAt: now, updatedAt: now, lines: { create: lines } }, include: { lines: true } });
+    const c = await tx.claim.create({ data: { claimantId, title, purpose, status: 'draft', createdAt: now, updatedAt: now, lines: { create: lines } }, include: { lines: true, claimant: { select: { id: true, name: true } } } });
     return toClaimJson(c, new Map(cats.map((x) => [x.code, x.limitCents])));
   });
 }
@@ -92,7 +92,7 @@ export async function listMine(d: ClaimDeps, userId: string, q: { limit?: unknow
 export async function getClaim(d: ClaimDeps, user: { id: string; role: string } | undefined, id: string) {
   const c = await d.prisma.claim.findUnique({
     where: { id },
-    include: { lines: { include: { receipts: true } }, events: { include: { actor: { select: { id: true, name: true } } } } },
+    include: { lines: { include: { receipts: true } }, events: { include: { actor: { select: { id: true, name: true } } } }, claimant: { select: { id: true, name: true } } },
   });
   if (!c) throw new HttpError(404, 'not_found');
   await requireReadable(d.prisma, user, c);
@@ -101,7 +101,7 @@ export async function getClaim(d: ClaimDeps, user: { id: string; role: string } 
 }
 
 type User = { id: string; role: string } | undefined;
-const FULL = { lines: { include: { receipts: true } }, events: { include: { actor: { select: { id: true, name: true } } } } } as const;
+const FULL = { claimant: { select: { id: true, name: true } }, lines: { include: { receipts: true } }, events: { include: { actor: { select: { id: true, name: true } } } } } as const;
 
 // Order (architecture section 6): 404 claim, 403 non-claimant, 409 status. Runs inside the write transaction.
 async function loadOwn(tx: Tx, user: User, id: string, editable = true) {
@@ -192,7 +192,7 @@ export const deleteReceipt = (d: ClaimDeps, user: User, id: string, receiptId: s
 
 // E-29: 404 claim, 403 not readable (current hierarchy), 404 receipt not of this claim.
 export async function receiptForRead(d: ClaimDeps, user: User, id: string, receiptId: string) {
-  const c = await d.prisma.claim.findUnique({ where: { id }, select: { id: true, claimantId: true, status: true } });
+  const c = await d.prisma.claim.findUnique({ where: { id }, select: { id: true, claimantId: true, status: true, approverId: true } });
   if (!c) throw new HttpError(404, 'not_found');
   await requireReadable(d.prisma, user, c);
   const r = await d.prisma.receipt.findFirst({ where: { id: receiptId, claimId: id }, select: { storageKey: true, mime: true } });
