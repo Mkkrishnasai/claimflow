@@ -17,7 +17,7 @@ const prisma = new PrismaClient();
 const dir = mkdtempSync(join(tmpdir(), 'rcpt-'));
 const real = receiptStorage(dir);
 let store: ReceiptStore = real;
-const proxy: ReceiptStore = { ensureDir: () => real.ensureDir(), put: (b) => store.put(b), remove: (k) => store.remove(k) };
+const proxy: ReceiptStore = { ensureDir: () => real.ensureDir(), put: (b) => store.put(b), remove: (k) => store.remove(k), open: (k) => store.open(k) };
 let srv: Server, base: string;
 const out: string[] = [];
 let tick = 0;
@@ -162,7 +162,7 @@ test('AC-7 insert failure leaves no file; IO failure is a clean 500; logs clean'
   await prisma.$executeRawUnsafe(`CREATE TRIGGER t_fail BEFORE INSERT ON "Receipt" BEGIN SELECT RAISE(ABORT, 'boom'); END`);
   try { assert.equal((await up(s, PDF(), { 'x-filename': 'secret-name.pdf' })).status, 500); } finally { await prisma.$executeRawUnsafe('DROP TRIGGER t_fail'); }
   await nothing();
-  store = { ensureDir() {}, put: async () => { throw new Error('receipt_write_failed'); }, remove: async () => {} };
+  store = { ensureDir() {}, put: async () => { throw new Error('receipt_write_failed'); }, remove: async () => {}, open: real.open };
   const r = await up(s, PDF(), { 'x-filename': 'secret-name.pdf' });
   assert.equal(r.status, 500);
   const j = (await r.json()) as J;
@@ -173,8 +173,95 @@ test('AC-7 insert failure leaves no file; IO failure is a clean 500; logs clean'
   await nothing();
 });
 
+const get = (s: S | null, claim: string, rid: string) => fetch(`${base}/api/claims/${claim}/receipts/${rid}`, { headers: s ? { cookie: s.cookie } : {} });
+const del = (s: S, claim: string, rid: string) => fetch(`${base}/api/claims/${claim}/receipts/${rid}`, { method: 'DELETE', headers: { cookie: s.cookie, 'x-csrf-token': s.csrf } });
+const rcpt = async (s: S, claim: string) => ((await (await up(s, PDF(64), {}, claim)).json()) as J).id as string;
+const ids = async (...u: [string, string, string | null][]) => prisma.user.createMany({ data: u.map(([id, role, managerId]) => ({ id, email: `${id}@claimflow.test`, name: id, role: role as never, managerId, passwordHash: bcrypt.hashSync(PW, 4) })) });
+
+test('S5 AC-1/2/4 download: allowed readers, refusals, hierarchy change', async () => {
+  await prisma.user.update({ where: { id: 'emp' }, data: { managerId: null } });
+  await ids(['m3', 'manager', null], ['m2', 'manager', 'm3'], ['m1', 'manager', 'm2'], ['m0', 'manager', 'm1'], ['fin', 'finance', null], ['adm', 'admin', null], ['mx', 'manager', null]);
+  await prisma.user.update({ where: { id: 'emp' }, data: { managerId: 'm1' } });
+  const e = await signIn('emp');
+  const rid = await rcpt(e, 'c1');
+  await prisma.claim.update({ where: { id: 'c1' }, data: { status: 'submitted' } });
+  const body = PDF(64);
+  for (const u of ['emp', 'm1', 'm2', 'fin']) {
+    const r = await get(await signIn(u), 'c1', rid);
+    assert.equal(r.status, 200, u);
+    assert.ok(Buffer.from(await r.arrayBuffer()).equals(body));
+    assert.equal(r.headers.get('content-type'), 'application/pdf');
+    assert.equal(r.headers.get('content-length'), '64');
+    assert.equal(r.headers.get('x-content-type-options'), 'nosniff');
+    assert.equal(r.headers.get('cache-control'), 'private, no-store');
+    assert.equal(r.headers.get('content-disposition'), 'inline');
+    assert.equal(r.headers.get('accept-ranges'), null);
+  }
+  assert.equal((await get(null, 'c1', rid)).status, 401);
+  for (const u of ['other', 'm3', 'mx', 'adm']) assert.equal((await get(await signIn(u), 'c1', rid)).status, 403, u);
+  assert.equal((await get(await signIn('fin'), 'c1', 'nope')).status, 404);
+  assert.equal((await get(await signIn('fin'), 'sub', rid)).status, 404);
+  await prisma.claim.update({ where: { id: 'c1' }, data: { status: 'draft' } });
+  assert.equal((await get(await signIn('fin'), 'c1', rid)).status, 403);
+  await prisma.claim.update({ where: { id: 'c1' }, data: { status: 'submitted' } });
+  await prisma.user.update({ where: { id: 'emp' }, data: { managerId: 'mx' } });
+  assert.equal((await get(await signIn('m1'), 'c1', rid)).status, 403);
+});
+
+test('S5 AC-3 no public URL', async () => {
+  const e = await signIn('emp');
+  await rcpt(e, 'c1');
+  const k = (await prisma.receipt.findFirstOrThrow()).storageKey;
+  for (const p of [`/receipts/${k}`, `/uploads/${k}`, `/api/receipts/${k}`]) assert.ok([401, 404].includes((await fetch(base + p)).status), p);
+  const j = await (await fetch(`${base}/api/claims/c1`, { headers: { cookie: e.cookie } })).text();
+  assert.ok(!j.includes(k) && !j.includes('storageKey') && !j.includes('/receipts/'));
+});
+
+test('S5 AC-5 delete receipt only while editable', async () => {
+  const e = await signIn('emp');
+  const a = await rcpt(e, 'c1'), b = await rcpt(e, 'c2');
+  await prisma.claim.update({ where: { id: 'c2' }, data: { status: 'submitted' } });
+  assert.equal((await del(e, 'c1', a)).status, 204);
+  assert.equal((await del(e, 'c1', a)).status, 404);
+  const r = await del(e, 'c2', b);
+  assert.equal(r.status, 409);
+  assert.equal(((await r.json()) as J).error, 'claim_not_editable');
+  assert.equal(await prisma.receipt.count(), 1);
+  assert.equal(readdirSync(dir).length, 1);
+});
+
+test('S5 AC-6 line/claim delete removes files; removal failure still 204 with count only', async () => {
+  const e = await signIn('emp');
+  for (let i = 0; i < 2; i++) await rcpt(e, 'c1');
+  const call = (path: string) => fetch(`${base}/api/claims/${path}`, { method: 'DELETE', headers: { cookie: e.cookie, 'x-csrf-token': e.csrf } });
+  assert.equal((await call('c1/lines/c1-l')).status, 204);
+  assert.equal(await prisma.receipt.count(), 0);
+  assert.deepEqual(readdirSync(dir), []);
+  for (let i = 0; i < 3; i++) await rcpt(e, 'c2');
+  store = { ...real, remove: async () => { throw new Error('/secret/path'); } };
+  out.length = 0;
+  assert.equal((await call('c2')).status, 204);
+  assert.equal(await prisma.receipt.count(), 0);
+  const log = out.join('');
+  assert.match(log, /"orphanFiles":3/);
+  assert.ok(!log.includes('/secret/path'));
+  store = real;
+});
+
+test('S5 AC-7 missing file is a plain 500', async () => {
+  const e = await signIn('emp');
+  const rid = await rcpt(e, 'c1');
+  for (const f of readdirSync(dir)) await real.remove(f);
+  const r = await get(e, 'c1', rid);
+  assert.equal(r.status, 500);
+  const t = await r.text();
+  assert.equal((JSON.parse(t) as J).error, 'internal_error');
+  assert.ok(!t.includes(dir));
+  assert.equal(r.headers.get('content-disposition'), null);
+});
+
 test('no route deletes Claim/Receipt/ClaimEvent outside the draft-delete and line paths', () => {
   const src = readFileSync('api/src/claims/service.ts', 'utf8');
   const hits = [...src.matchAll(/tx\.(claimEvent|receipt|claim)\.delete(Many)?/g)].map((m) => m[0]).sort();
-  assert.deepEqual(hits, ['tx.claim.delete', 'tx.receipt.deleteMany', 'tx.receipt.deleteMany']);
+  assert.deepEqual(hits, ['tx.claim.delete', 'tx.receipt.delete', 'tx.receipt.deleteMany', 'tx.receipt.deleteMany']);
 });
