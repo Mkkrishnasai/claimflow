@@ -50,6 +50,7 @@ Stop with Ctrl-C (SIGINT; SIGTERM and SIGHUP behave the same): every service the
 ## Configuration and tests
 
 - `PUBLIC_BASE_URL` (in `.env`): origin used in set-password and reset links emailed to users, e.g. `http://127.0.0.1:5173`.
+- `RECEIPTS_DIR` (in `.env`, optional): where uploaded receipts are stored, default `<repo>/data/receipts` (created with mode 0700; git-ignored). Must be outside `web/`. Changing it needs an API restart and moving the existing files.
 - `npm run test:api`: API tests against a throwaway SQLite database.
 - `npx playwright install chromium`: one-off download needed before `npm run test:e2e` (browser and accessibility tests).
 - Demo browser: use Chromium or Firefox for manual demos; the accessibility tests run on Chromium at 360x740.
