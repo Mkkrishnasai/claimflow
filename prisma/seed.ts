@@ -14,12 +14,12 @@ if (failure) {
 const password = process.env.SEED_PASSWORD as string;
 const SM = 'senior.manager@claimflow.test';
 const MGR = 'manager@claimflow.test';
-const users: { email: string; role: Role; manager: string | null }[] = [
-  { email: SM, role: 'manager', manager: null },
-  { email: MGR, role: 'manager', manager: SM },
-  { email: 'employee@claimflow.test', role: 'employee', manager: MGR },
-  { email: 'finance@claimflow.test', role: 'finance', manager: SM },
-  { email: 'admin@claimflow.test', role: 'admin', manager: SM },
+const users: { email: string; name: string; role: Role; manager: string | null }[] = [
+  { email: SM, name: 'Senior Manager', role: 'manager', manager: null },
+  { email: MGR, name: 'Manager', role: 'manager', manager: SM },
+  { email: 'employee@claimflow.test', name: 'Employee', role: 'employee', manager: MGR },
+  { email: 'finance@claimflow.test', name: 'Finance', role: 'finance', manager: SM },
+  { email: 'admin@claimflow.test', name: 'Admin', role: 'admin', manager: SM },
 ];
 
 const prisma = new PrismaClient();
@@ -34,6 +34,7 @@ try {
         update: {}, // never overwrite existing rows
         create: {
           email: u.email,
+          name: u.name,
           role: u.role,
           passwordHash: hashes[i],
           managerId: u.manager ? ids.get(u.manager)! : null,

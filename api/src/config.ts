@@ -7,6 +7,7 @@ export class ConfigError extends Error {
 
 export interface Config {
   readonly databaseUrl: string;
+  readonly publicBaseUrl: string;
   readonly smtp: { readonly host: string; readonly port: number; readonly user?: string; readonly pass?: string };
 }
 
@@ -25,5 +26,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (!/^\d+$/.test(portStr) || port < 1 || port > 65535) throw new ConfigError('SMTP_PORT', 'must be an integer 1-65535');
   const user = get('SMTP_USER');
   const pass = get('SMTP_PASS');
-  return Object.freeze({ databaseUrl, smtp: Object.freeze({ host, port, user, pass }) });
+  const rawBase = get('PUBLIC_BASE_URL') ?? 'http://127.0.0.1:5173';
+  let publicBaseUrl: string;
+  try {
+    const u = new URL(rawBase);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new Error();
+    publicBaseUrl = rawBase.replace(/\/+$/, '');
+  } catch {
+    throw new ConfigError('PUBLIC_BASE_URL', 'must be an http(s) URL');
+  }
+  return Object.freeze({ databaseUrl, publicBaseUrl, smtp: Object.freeze({ host, port, user, pass }) });
 }
