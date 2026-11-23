@@ -1,0 +1,27 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  employee
+  manager
+  finance
+  admin
+}
+
+model User {
+  id           String  @id @default(uuid())
+  email        String  @unique
+  passwordHash String
+  role         Role
+  managerId    String?
+  manager      User?   @relation("Hierarchy", fields: [managerId], references: [id], onDelete: Restrict)
+  reports      User[]  @relation("Hierarchy")
+
+  @@index([managerId])
+}
