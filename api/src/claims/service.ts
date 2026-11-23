@@ -1,7 +1,7 @@
 import type { PrismaClient } from '@prisma/client';
 import { HttpError } from '../middleware.js';
-import { requireReadable } from './access.js';
-import { withWrite, type Clock } from '../db.js';
+import { requireClaimant, requireEditable, requireReadable } from './access.js';
+import { withWrite, type Clock, type Tx } from '../db.js';
 
 export interface ClaimDeps { prisma: PrismaClient; clock: Clock }
 
@@ -93,3 +93,79 @@ export async function getClaim(d: ClaimDeps, user: { id: string; role: string } 
   const cats = await d.prisma.category.findMany({ select: { code: true, limitCents: true } });
   return toClaimJson(c, new Map(cats.map((x) => [x.code, x.limitCents])));
 }
+
+type User = { id: string; role: string } | undefined;
+const FULL = { lines: { include: { receipts: true } }, events: { include: { actor: { select: { name: true } } } } } as const;
+
+// Order (architecture section 6): 404 claim, 403 non-claimant, 409 status. Runs inside the write transaction.
+async function loadOwn(tx: Tx, user: User, id: string, editable = true) {
+  const c = await tx.claim.findUnique({ where: { id }, select: { id: true, claimantId: true, status: true } });
+  if (!c) throw new HttpError(404, 'not_found');
+  requireClaimant(user, c);
+  if (editable) requireEditable(c);
+  return c;
+}
+async function reload(tx: Tx, id: string) {
+  const c = await tx.claim.findUniqueOrThrow({ where: { id }, include: FULL });
+  const cats = await tx.category.findMany({ select: { code: true, limitCents: true } });
+  return toClaimJson(c, new Map(cats.map((x) => [x.code, x.limitCents])));
+}
+const touch = (tx: Tx, d: ClaimDeps, id: string, data: Record<string, unknown> = {}) => tx.claim.update({ where: { id }, data: { ...data, updatedAt: d.clock() } });
+
+// Only title and purpose are read; status stays as it is (a rejected claim stays rejected until resubmitted).
+export const editClaim = (d: ClaimDeps, user: User, id: string, body: Record<string, unknown>) => withWrite(d.prisma, async (tx) => {
+  await loadOwn(tx, user, id);
+  const data: Record<string, string> = {};
+  if (body.title !== undefined) data.title = text(body.title, 'title', 1, 120);
+  if (body.purpose !== undefined) data.purpose = text(body.purpose, 'purpose', 10, 2000);
+  await touch(tx, d, id, data);
+  return reload(tx, id);
+});
+
+export const addLine = (d: ClaimDeps, user: User, id: string, body: Record<string, unknown>) => withWrite(d.prisma, async (tx) => {
+  await loadOwn(tx, user, id);
+  const existing = await tx.claimLine.findMany({ where: { claimId: id }, select: { position: true } });
+  if (existing.length >= 50) throw bad('A claim can have at most 50 lines');
+  const codes = new Set((await tx.category.findMany()).map((c) => c.code));
+  const line = parseLine(body, codes);
+  await tx.claimLine.create({ data: { claimId: id, position: Math.max(0, ...existing.map((l) => l.position)) + 1, ...line } });
+  await touch(tx, d, id);
+  return reload(tx, id);
+});
+
+async function ownLine(tx: Tx, id: string, lineId: string) {
+  const l = await tx.claimLine.findFirst({ where: { id: lineId, claimId: id } });
+  if (!l) throw new HttpError(404, 'not_found');
+  return l;
+}
+
+// Partial patch: unsent fields keep their stored value, then the whole line is validated as on create.
+export const editLine = (d: ClaimDeps, user: User, id: string, lineId: string, body: Record<string, unknown>) => withWrite(d.prisma, async (tx) => {
+  await loadOwn(tx, user, id);
+  const l = await ownLine(tx, id, lineId);
+  const pick = (k: 'date' | 'categoryCode' | 'amountCents' | 'description') => (body[k] !== undefined ? body[k] : l[k]);
+  const codes = new Set((await tx.category.findMany()).map((c) => c.code));
+  const line = parseLine({ date: pick('date'), categoryCode: pick('categoryCode'), amountCents: pick('amountCents'), description: pick('description') }, codes);
+  await tx.claimLine.update({ where: { id: lineId }, data: line });
+  await touch(tx, d, id);
+  return reload(tx, id);
+});
+
+export const deleteLine = (d: ClaimDeps, user: User, id: string, lineId: string) => withWrite(d.prisma, async (tx) => {
+  await loadOwn(tx, user, id);
+  await ownLine(tx, id, lineId);
+  await tx.receipt.deleteMany({ where: { lineId } });
+  await tx.claimLine.delete({ where: { id: lineId } });
+  await touch(tx, d, id);
+});
+
+// Draft with no history only. Receipt rows go too (receipt files are CLAIM-3-S5).
+export const deleteClaim = (d: ClaimDeps, user: User, id: string) => withWrite(d.prisma, async (tx) => {
+  const c = await loadOwn(tx, user, id, false);
+  if (c.status === 'paid') throw new HttpError(409, 'claim_paid');
+  if (c.status !== 'draft') throw new HttpError(409, 'claim_not_editable');
+  if (await tx.claimEvent.count({ where: { claimId: id } }) > 0) throw new HttpError(409, 'has_history');
+  await tx.receipt.deleteMany({ where: { claimId: id } });
+  await tx.claimLine.deleteMany({ where: { claimId: id } });
+  await tx.claim.delete({ where: { id } });
+});
