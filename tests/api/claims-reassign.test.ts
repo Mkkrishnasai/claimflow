@@ -7,6 +7,7 @@ import { PrismaClient } from '@prisma/client';
 import { createApp } from '../../api/src/app.js';
 import { createLogger } from '../../api/src/logger.js';
 import { withWrite } from '../../api/src/db.js';
+import { receiptForRead } from '../../api/src/claims/service.js';
 import { prismaClaimStore } from '../../api/src/claims/store.js';
 
 const PW = 'correct horse battery';
@@ -75,11 +76,11 @@ test('AC-2 stranding refused 409 with 0 claims and 0 history rows changed', asyn
   assert.equal(await prisma.claimEvent.count(), 0);
 });
 
-test('AC-3 listWaitingOn returns only submitted claims for that approver', async () => {
+test('AC-3 listWaitingOn returns submitted and approved claims for that approver', async () => {
   const a = await mk('m', 'submitted');
-  await mk('m', 'approved'); await mk('m', 'draft'); await mk('top', 'submitted');
+  const b = await mk('m', 'approved'); await mk('m', 'draft'); await mk('top', 'submitted');
   const got = await withWrite(prisma, (tx) => prismaClaimStore.listWaitingOn(tx, 'm'));
-  assert.deepEqual(got.map((c) => c.id), [a.id]);
+  assert.deepEqual(got.map((c) => c.id), [a.id, b.id]);
   assert.equal(await withWrite(prisma, (tx) => prismaClaimStore.get(tx, 'nope')), null);
 });
 
@@ -93,4 +94,38 @@ test('failure after reassign rolls back claims and history together', async () =
   await assert.rejects(withWrite(prisma, async (tx) => { await prismaClaimStore.reassign(tx, ['c' + n], 'top', 'adm'); throw new Error('boom'); }));
   assert.equal((await prisma.claim.findUniqueOrThrow({ where: { id: `c${n}` } })).approverId, 'm');
   assert.equal(await prisma.claimEvent.count(), 0);
+});
+
+test('approved claim moves up with reassigned approved -> approved', async () => {
+  const c = await mk('m', 'approved');
+  assert.equal((await deact('m')).status, 200);
+  const row = await prisma.claim.findUniqueOrThrow({ where: { id: c.id } });
+  assert.deepEqual([row.approverId, row.status], ['top', 'approved']);
+  const ev = await prisma.claimEvent.findMany({ where: { claimId: c.id } });
+  assert.deepEqual(ev.map((e) => [e.action, e.fromStatus, e.toStatus]), [['reassigned', 'approved', 'approved']]);
+});
+
+test('approved claim with no manager above: 409 would_strand_claims, nothing changes', async () => {
+  const c = await mk('orphan', 'approved');
+  const r = await deact('orphan');
+  assert.equal(r.status, 409);
+  assert.equal(((await r.json()) as { error: string }).error, 'would_strand_claims');
+  assert.equal((await prisma.user.findUniqueOrThrow({ where: { id: 'orphan' } })).active, true);
+  assert.equal((await prisma.claim.findUniqueOrThrow({ where: { id: c.id } })).approverId, 'orphan');
+  assert.equal(await prisma.claimEvent.count(), 0);
+});
+
+test('GET claim and receipt: current approver 3 levels up reads (200), unrelated manager 403; claimant {id,name}', async () => {
+  await prisma.user.createMany({ data: [{ id: 'stranger', email: 'stranger@claimflow.test', name: 'stranger', role: 'manager', managerId: null, active: true, passwordHash: (await prisma.user.findUniqueOrThrow({ where: { id: 'top' } })).passwordHash }] });
+  const c = await mk('stranger', 'submitted');
+  await prisma.claimLine.create({ data: { id: `l${c.id}`, claimId: c.id, position: 1, date: '2026-01-01', categoryCode: (await prisma.category.findFirstOrThrow()).code, amountCents: 100, description: 'd' } });
+  await prisma.receipt.create({ data: { id: `r${c.id}`, claimId: c.id, lineId: `l${c.id}`, storageKey: 'k', mime: 'application/pdf', sizeBytes: 1, sha256: 'x', uploadedById: 'emp', uploadedAt: new Date(0) } });
+  const get = async (who: string, path: string) => { const s = await signIn(who); return fetch(`${base}${path}`, { headers: { cookie: s.cookie } }); };
+  const r1 = await get('stranger', `/api/claims/${c.id}`);
+  assert.equal(r1.status, 200);
+  assert.deepEqual(((await r1.json()) as { claimant: unknown }).claimant, { id: 'emp', name: 'emp' });
+  const d = { prisma } as never;
+  assert.equal((await receiptForRead(d, { id: 'stranger', role: 'manager' }, c.id, `r${c.id}`)).mime, 'application/pdf');
+  assert.equal((await get('orphan', `/api/claims/${c.id}`)).status, 403);
+  await assert.rejects(receiptForRead(d, { id: 'orphan', role: 'manager' }, c.id, `r${c.id}`), { status: 403 });
 });

@@ -3,12 +3,13 @@ import { HttpError } from '../middleware.js';
 
 // The only file in api/src allowed to compare roles (S8 AC-5). Pure: no DB, Express or session.
 export interface Requester { id: string; role: string }
-export interface ClaimRef { claimantId: string; status: string }
+export interface ClaimRef { claimantId: string; status: string; approverId?: string | null }
 export type MgrOf = (userId: string) => string | null;
 
 // FR-8 / AC-10 table. Manager depth counts hops up the chain from claimant to requester (1 or 2 only).
 export function canReadClaim(u: Requester, c: ClaimRef, mgrOf: MgrOf): boolean {
   if (u.id === c.claimantId) return true;
+  if (c.approverId != null && c.approverId === u.id) return true; // current approver, any depth (ADR-18)
   if (u.role === 'finance') return c.status !== 'draft'; // Q-4
   if (u.role !== 'manager') return false;
   const d1 = mgrOf(c.claimantId);
