@@ -3,11 +3,12 @@ import type { PrismaClient } from '@prisma/client';
 import { HttpError } from '../middleware.js';
 import { withWrite, type Clock } from '../db.js';
 import { hashPassword, needsRehash, randomToken, sha256, verifyPassword } from './secrets.js';
+import { clearFailures, isLocked, recordFailure } from './throttle.js';
 import { clearCookie, csrfFor, parseCookies, setCookie } from './session.js';
 
 const invalid = () => new HttpError(401, 'invalid_credentials');
 
-export function authRoutes(prisma: PrismaClient, clock: Clock): Router {
+export function authRoutes(prisma: PrismaClient, clock: Clock, verify: typeof verifyPassword = verifyPassword): Router {
   const r = Router();
 
   // E-4
@@ -17,21 +18,37 @@ export function authRoutes(prisma: PrismaClient, clock: Clock): Router {
     res.json({ csrfToken });
   });
 
-  // E-5. bcrypt runs outside withWrite; the transaction re-checks state (arch 5.3). Lock-out maths arrive in S3.
+  // E-5. bcrypt runs outside withWrite; the transaction re-checks state (arch 5.3). Lock maths in throttle.ts.
   r.post('/auth/sign-in', async (req, res) => {
-    const { email, password } = req.body ?? {};
-    if (typeof email !== 'string' || typeof password !== 'string' || email.length > 254) throw new HttpError(400, 'bad_request');
-    const user = await prisma.user.findUnique({ where: { email: email.trim().toLowerCase() } });
+    const { email: rawEmail, password } = req.body ?? {};
+    if (typeof rawEmail !== 'string' || typeof password !== 'string' || rawEmail.length > 254) throw new HttpError(400, 'bad_request');
+    const email = rawEmail.trim().toLowerCase();
+    const user = await prisma.user.findUnique({ where: { email } });
     const hash = user?.active ? user.passwordHash : null;
     res.locals.logFields = { authEvent: 'sign_in_failed', ...(user && { userId: user.id }) };
-    if (!(await verifyPassword(password, hash)) || !user) throw invalid();
+    // A locked request is refused before the password is evaluated; the dummy compare keeps timing equal (NFR-SEC-6).
+    if (await isLocked(prisma, email, clock())) {
+      await verify(password, null);
+      res.locals.logFields.authEvent = 'sign_in_locked';
+      throw invalid();
+    }
+    if (!(await verify(password, hash)) || !user) {
+      const { locked } = await withWrite(prisma, async (tx) => {
+        const now = clock();
+        if (await isLocked(tx, email, now)) return { locked: false }; // concurrent lock: write nothing
+        return recordFailure(tx, email, now);
+      });
+      if (locked) res.locals.logFields.event = 'lock_started';
+      throw invalid();
+    }
     const upgraded = hash && needsRehash(hash) ? await hashPassword(password) : null; // bcrypt outside withWrite (ADR-17)
     const sid = randomToken();
     const old = parseCookies(req.headers.cookie).sid;
     const now = clock();
     await withWrite(prisma, async (tx) => {
       const u = await tx.user.findUnique({ where: { id: user.id } });
-      if (!u?.active || u.passwordHash !== hash) throw invalid();
+      if (!u?.active || u.passwordHash !== hash || (await isLocked(tx, email, now))) throw invalid();
+      await clearFailures(tx, email);
       if (upgraded) await tx.user.update({ where: { id: u.id }, data: { passwordHash: upgraded } });
       if (old) await tx.session.deleteMany({ where: { idHash: sha256(old) } });
       await tx.session.create({
