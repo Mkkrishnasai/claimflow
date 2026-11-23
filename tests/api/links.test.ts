@@ -41,3 +41,10 @@ test('linkMail rejects when SMTP is unreachable', async () => {
   s.close();
   await assert.rejects(createMailer({ smtp: { host: '127.0.0.1', port: s.port } }).linkMail('reset', 'a@b.test', 'http://x'));
 });
+
+test('linkMail states the 1 hour validity for reset links', async () => {
+  const s = await sink();
+  await createMailer({ smtp: { host: '127.0.0.1', port: s.port } }).linkMail('reset', 'a@b.test', 'http://app.test/reset-password#token=abc');
+  s.close();
+  assert.match(s.msgs[0], /within 1 hour/);
+});

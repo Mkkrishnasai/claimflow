@@ -24,8 +24,9 @@ export function createApp(opts: AppOptions = {}): Express {
   });
   if (opts.deps) {
     const { prisma, clock } = opts.deps;
+    const log = opts.log ?? createLogger();
     const api = Router();
-    api.use(authenticate(prisma, clock), express.json({ limit: '10kb' }), authRoutes(prisma, clock, opts.deps.verify), userRoutes(opts.deps));
+    api.use(authenticate(prisma, clock), express.json({ limit: '10kb' }), authRoutes(prisma, clock, opts.deps.verify, { mailer: opts.deps.mailer, publicBaseUrl: opts.deps.publicBaseUrl, log }), userRoutes(opts.deps));
     app.use('/api', api);
   }
   if (opts.testRoutes) app.use(testRouter);

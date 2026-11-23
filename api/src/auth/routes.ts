@@ -3,12 +3,15 @@ import type { PrismaClient } from '@prisma/client';
 import { HttpError } from '../middleware.js';
 import { withWrite, type Clock } from '../db.js';
 import { checkPassword, hashPassword, needsRehash, randomToken, sha256, verifyPassword } from './secrets.js';
-import { clearFailures, isLocked, recordFailure } from './throttle.js';
+import { clearFailures, isLocked, recordFailure, takeForgotSlot } from './throttle.js';
+import type { Logger } from '../logger.js';
+import type { Mailer } from '../mailer.js';
 import { clearCookie, csrfFor, parseCookies, setCookie } from './session.js';
 
 const invalid = () => new HttpError(401, 'invalid_credentials');
 
-export function authRoutes(prisma: PrismaClient, clock: Clock, verify: typeof verifyPassword = verifyPassword): Router {
+export function authRoutes(prisma: PrismaClient, clock: Clock, verify: typeof verifyPassword = verifyPassword,
+  mail?: { mailer: Mailer; publicBaseUrl: string; log: Logger }): Router {
   const r = Router();
 
   // E-4
@@ -70,7 +73,7 @@ export function authRoutes(prisma: PrismaClient, clock: Clock, verify: typeof ve
     const now = clock();
     await withWrite(prisma, async (tx) => {
       const { count } = await tx.oneTimeToken.updateMany({
-        where: { hash: sha256(token), purpose: 'set_password', usedAt: null, expiresAt: { gt: now } },
+        where: { hash: sha256(token), purpose: { in: ['set_password', 'reset'] }, usedAt: null, expiresAt: { gt: now } },
         data: { usedAt: now },
       });
       if (count !== 1) throw new HttpError(400, 'invalid_token');
@@ -79,6 +82,31 @@ export function authRoutes(prisma: PrismaClient, clock: Clock, verify: typeof ve
       await tx.user.update({ where: { id: t.userId }, data: { passwordHash } });
       await tx.session.deleteMany({ where: { userId: t.userId } });
     });
+    res.json({ ok: true });
+  });
+
+  // E-7. No bcrypt on any branch; identical response; mail after the response (NFR-PERF-2, NFR-SEC-6). Over-quota writes nothing.
+  r.post('/auth/forgot-password', async (req, res) => {
+    const { email: rawEmail } = req.body ?? {};
+    if (typeof rawEmail !== 'string' || rawEmail.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(rawEmail.trim())) throw new HttpError(400, 'bad_request');
+    const email = rawEmail.trim().toLowerCase();
+    const raw = randomToken();
+    const now = clock();
+    res.locals.logFields = { authEvent: 'reset_requested' };
+    const to = await withWrite(prisma, async (tx) => {
+      if (!(await takeForgotSlot(tx, email, now))) return null;
+      const u = await tx.user.findUnique({ where: { email } });
+      if (!u?.active || !u.passwordHash) return null;
+      await tx.oneTimeToken.updateMany({ where: { userId: u.id, purpose: 'reset', usedAt: null }, data: { usedAt: now } });
+      await tx.oneTimeToken.create({ data: { hash: sha256(raw), userId: u.id, purpose: 'reset', expiresAt: new Date(now.getTime() + 3_600_000) } });
+      return u.email;
+    });
+    if (to && mail) {
+      res.once('finish', () => {
+        mail.mailer.linkMail('reset', to, `${mail.publicBaseUrl}/reset-password#token=${raw}`)
+          .catch(() => mail.log.warn('mail_send_failed', { template: 'reset' })); // no requestId: the request line is already written
+      });
+    }
     res.json({ ok: true });
   });
 

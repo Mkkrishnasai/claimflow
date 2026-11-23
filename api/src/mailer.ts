@@ -18,7 +18,7 @@ export function createMailer(config: Pick<Config, 'smtp'>): Mailer {
     async linkMail(kind, to, url) {
       await transport.sendMail({
         from: 'ClaimFlow <no-reply@claimflow.local>', to, subject: SUBJECT[kind],
-        text: `Use this link within 24 hours: ${url}\n`, // wording provisional (Q-6)
+        text: `Use this link within ${kind === 'reset' ? '1 hour' : '24 hours'}: ${url}\n`, // wording provisional (Q-6)
       });
     },
   };
