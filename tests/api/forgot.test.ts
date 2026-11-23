@@ -25,7 +25,7 @@ before(async () => {
   await prisma.oneTimeToken.deleteMany();
   await prisma.session.deleteMany();
   await prisma.loginAttempt.deleteMany();
-  await prisma.user.deleteMany();
+  await prisma.user.updateMany({ data: { managerId: null } }); await prisma.user.deleteMany();
   await prisma.user.createMany({ data: [
     { id: 'k', email: 'known@claimflow.test', name: 'K', role: 'employee', passwordHash: hash },
     { id: 'd', email: 'off@claimflow.test', name: 'D', role: 'employee', passwordHash: hash, active: false },

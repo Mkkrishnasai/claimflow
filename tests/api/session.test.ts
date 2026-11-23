@@ -16,7 +16,7 @@ const tick = (ms: number) => { now = new Date(now.getTime() + ms); };
 before(async () => {
   const hash = await bcrypt.hash(PW, 12);
   await prisma.session.deleteMany();
-  await prisma.user.deleteMany();
+  await prisma.user.updateMany({ data: { managerId: null } }); await prisma.user.deleteMany();
   await prisma.user.createMany({ data: [
     { id: 'a', email: 'admin@claimflow.test', name: 'Admin', role: 'admin', passwordHash: hash },
     { id: 'd', email: 'off@claimflow.test', name: 'Off', role: 'employee', passwordHash: hash, active: false },

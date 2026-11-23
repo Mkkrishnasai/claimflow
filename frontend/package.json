@@ -6,7 +6,7 @@
   "engines": { "node": ">=20 <23" },
   "scripts": {
     "lint": "npm --prefix .. run lint",
-    "test": "npm --prefix .. run test:unit",
+    "test": "npm --prefix .. run test:unit && npm --prefix .. run test:api",
     "build": "npm --prefix .. run build"
   }
 }

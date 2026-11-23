@@ -21,7 +21,7 @@ const verify: typeof verifyPassword = async (pw, hash) => { if (gate && pw === P
 before(async () => {
   const hash = await bcrypt.hash(PW, 12);
   await prisma.session.deleteMany();
-  await prisma.user.deleteMany();
+  await prisma.user.updateMany({ data: { managerId: null } }); await prisma.user.deleteMany();
   await prisma.user.create({ data: { id: 'l', email: E, name: 'L', role: 'employee', passwordHash: hash } });
   srv = createApp({ log: createLogger({ write: () => true }), deps: { prisma, clock, verify } as never }).listen(0, '127.0.0.1');
   await new Promise((r) => srv.once('listening', r));

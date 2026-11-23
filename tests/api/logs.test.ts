@@ -15,8 +15,7 @@ let srv: Server, base: string;
 before(async () => {
   await prisma.oneTimeToken.deleteMany();
   await prisma.session.deleteMany();
-  await prisma.user.updateMany({ data: { managerId: null } });
-  await prisma.user.deleteMany();
+  await prisma.user.updateMany({ data: { managerId: null } }); await prisma.user.deleteMany();
   await prisma.user.create({ data: { id: 'a', email: 'admin@claimflow.test', name: 'Admin', role: 'admin', passwordHash: await bcrypt.hash(PW, 10) } });
   srv = createApp({ log: createLogger({ write: (s) => out.push(s) }), deps: { prisma, clock: () => new Date() } }).listen(0, '127.0.0.1');
   await new Promise((r) => srv.once('listening', r));

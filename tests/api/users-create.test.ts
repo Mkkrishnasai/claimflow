@@ -18,7 +18,7 @@ before(async () => {
   const hash = await bcrypt.hash(PW, 4);
   await prisma.oneTimeToken.deleteMany();
   await prisma.session.deleteMany();
-  await prisma.user.deleteMany();
+  await prisma.user.updateMany({ data: { managerId: null } }); await prisma.user.deleteMany();
   await prisma.user.createMany({ data: [
     { id: 'a', email: 'admin@claimflow.test', name: 'Admin', role: 'admin', passwordHash: hash },
     { id: 'e', email: 'emp@claimflow.test', name: 'Emp', role: 'employee', passwordHash: hash },

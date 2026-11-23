@@ -44,8 +44,7 @@ before(async () => {
   await prisma.oneTimeToken.deleteMany();
   await prisma.session.deleteMany();
   await prisma.loginAttempt.deleteMany();
-  await prisma.user.updateMany({ data: { managerId: null } });
-  await prisma.user.deleteMany();
+  await prisma.user.updateMany({ data: { managerId: null } }); await prisma.user.deleteMany();
   const u = (id: string, role: string, extra = {}) => ({ id, email: `${id}@claimflow.test`, name: `N-${id}`, role: role as never, passwordHash, ...extra });
   await prisma.user.createMany({ data: [
     u('adm', 'admin'), u('emp', 'employee'), u('fin', 'finance'), u('U', 'manager'), u('OB', 'manager'),
@@ -60,8 +59,7 @@ before(async () => {
 after(async () => {
   srv.close(); srv2.close();
   await prisma.session.deleteMany();
-  await prisma.user.updateMany({ data: { managerId: null } }); // self-FK would block other files' deleteMany
-  await prisma.user.deleteMany(); await prisma.$disconnect();
+  await prisma.user.updateMany({ data: { managerId: null } }); await prisma.user.deleteMany(); await prisma.$disconnect();
 });
 
 const ROLE_USER = { employee: 'emp', manager: 'mgr', finance: 'fin', admin: 'adm' } as const;

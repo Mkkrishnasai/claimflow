@@ -1,5 +1,5 @@
 import bcrypt from 'bcryptjs';
-import { PrismaClient, type Role } from '@prisma/client';
+import type { Role } from '@prisma/client';
 import { loadDotenv } from '../api/src/env.js';
 import { checkSeedGuards } from './seed-guards.js';
 
@@ -22,6 +22,7 @@ const users: { email: string; name: string; role: Role; manager: string | null }
   { email: 'admin@claimflow.test', name: 'Admin', role: 'admin', manager: SM },
 ];
 
+const { PrismaClient } = await import('@prisma/client'); // after guards: importing it auto-loads .env
 const prisma = new PrismaClient();
 try {
   // cost 12: PRD NFR-SEC-1 (>=12)

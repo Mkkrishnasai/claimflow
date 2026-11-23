@@ -29,8 +29,7 @@ async function seed() {
   const hash = await bcrypt.hash(PW, 4);
   await prisma.oneTimeToken.deleteMany();
   await prisma.session.deleteMany();
-  await prisma.user.updateMany({ data: { managerId: null } });
-  await prisma.user.deleteMany();
+  await prisma.user.updateMany({ data: { managerId: null } }); await prisma.user.deleteMany();
   const u = (id: string, role: string, managerId: string | null = null, active = true) =>
     ({ id, email: `${id}@claimflow.test`, name: id, role: role as never, managerId, active, passwordHash: hash });
   await prisma.user.createMany({ data: [
@@ -51,8 +50,7 @@ beforeEach(seed);
 after(async () => {
   srv.close();
   await prisma.session.deleteMany();
-  await prisma.user.updateMany({ data: { managerId: null } }); // leave no FK links for later test files
-  await prisma.user.deleteMany(); await prisma.$disconnect(); });
+  await prisma.user.updateMany({ data: { managerId: null } }); await prisma.user.deleteMany(); await prisma.$disconnect(); });
 
 async function signIn(id: string) {
   const pre = await fetch(`${base}/api/auth/csrf`);

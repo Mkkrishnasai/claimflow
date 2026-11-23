@@ -15,8 +15,7 @@ before(async () => {
   const passwordHash = await bcrypt.hash(PW, 4);
   await prisma.oneTimeToken.deleteMany();
   await prisma.session.deleteMany();
-  await prisma.user.updateMany({ data: { managerId: null } }); // self-FK blocks deleteMany on leftover chains
-  await prisma.user.deleteMany();
+  await prisma.user.updateMany({ data: { managerId: null } }); await prisma.user.deleteMany();
   const u = (id: string, role: 'admin' | 'employee' | 'manager' | 'finance', extra = {}) =>
     ({ id, email: `${id}@claimflow.test`, name: id, role, passwordHash, ...extra });
   await prisma.user.createMany({ data: [
