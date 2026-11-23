@@ -272,9 +272,13 @@ test('S10 claim detail: content, actions, no-manager, errors, a11y at 360 px', a
     const s = await apiAs(email, PW);
     const h = { 'content-type': 'application/json', 'x-csrf-token': s.csrf, cookie: s.cookie };
     const cat = ((await (await fetch(`${WEB}/api/categories`, { headers: { cookie: s.cookie } })).json()) as { code: string; limitCents: number }[])[0];
-    const line = (amountCents: number) => ({ date: '2026-01-15', categoryCode: cat.code, amountCents, description: 'Taxi' });
+    const today = new Date().toISOString().slice(0, 10);
+    const line = (amountCents: number) => ({ date: today, categoryCode: cat.code, amountCents, description: 'Taxi', justification: 'Client dinner with the whole team' });
     const r = await fetch(`${WEB}/api/claims`, { method: 'POST', headers: h, body: JSON.stringify({ title: 'Detail trip', purpose: 'Client workshop in Berlin', lines: [line(100), line(cat.limitCents + 1)] }) });
-    return ((await r.json()) as { id: string }).id;
+    const claim = (await r.json()) as { id: string; lines: { id: string }[] };
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64');
+    await fetch(`${WEB}/api/claims/${claim.id}/lines/${claim.lines[1].id}/receipts`, { method: 'POST', headers: { 'x-csrf-token': s.csrf, cookie: s.cookie, 'x-filename': 'r.png', 'content-type': 'image/png' }, body: png });
+    return claim.id;
   };
   const signIn = async (email: string) => {
     const p = await phone();
@@ -311,7 +315,7 @@ test('S10 claim detail: content, actions, no-manager, errors, a11y at 360 px', a
   // no manager: Submit disabled with the explanation
   const sm = await signIn('senior.manager@claimflow.test');
   await sm.goto(`${WEB}/claims/${await mk('senior.manager@claimflow.test')}`);
-  await sm.getByText('You have no manager, so you cannot submit claims').waitFor();
+  await sm.getByText('A user with no manager cannot submit claims').waitFor();
   assert.ok(await sm.getByRole('button', { name: 'Submit' }).isDisabled());
 
   // not the claimant: read-only; unknown id
@@ -321,4 +325,47 @@ test('S10 claim detail: content, actions, no-manager, errors, a11y at 360 px', a
   assert.match(await fin.getByRole('alert').innerText(), /Access denied/);
   await page.goto(`${WEB}/claims/nope`);
   assert.match(await page.getByRole('alert').innerText(), /Claim not found/);
+});
+
+test('CLAIM-4-S5 failures list, flags and justification field at 360 px', async () => {
+  const s = await apiAs('employee@claimflow.test', PW);
+  const h = { 'content-type': 'application/json', 'x-csrf-token': s.csrf, cookie: s.cookie };
+  const cat = ((await (await fetch(`${WEB}/api/categories`, { headers: { cookie: s.cookie } })).json()) as { code: string; limitCents: number }[])[0];
+  const line = (amountCents: number, date: string) => ({ date, categoryCode: cat.code, amountCents, description: 'Taxi' });
+  const mkClaim = async (lines: unknown[]) => ((await (await fetch(`${WEB}/api/claims`, { method: 'POST', headers: h, body: JSON.stringify({ title: 'Flag trip', purpose: 'Client workshop in Berlin', lines }) })).json()) as { id: string }).id;
+  const page = await phone();
+  await page.goto(WEB + '/sign-in');
+  await page.fill('#email', 'employee@claimflow.test');
+  await page.fill('#password', PW);
+  await page.press('#password', 'Enter');
+  await page.getByRole('heading', { name: 'My claims' }).waitFor();
+
+  // old date + over limit without receipt/justification: 3 failures on line 1, 1 on line 2
+  const bad = await mkClaim([line(Math.max(cat.limitCents + 1, 2500), '2020-01-01'), line(100, '2020-01-01')]);
+  await page.goto(`${WEB}/claims/${bad}`);
+  await page.getByRole('button', { name: 'Submit' }).click();
+  const alert = page.getByRole('alert');
+  await alert.getByText('Submit refused: 4 problems').waitFor();
+  assert.equal(await alert.locator('li').count(), 4);
+  for (const t of await alert.locator('li').allInnerTexts()) assert.match(t, /^(Line \d+|Claim)/);
+  assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('role')), 'alert');
+  assert.equal(await page.getByText('draft', { exact: true }).count(), 1);
+  await clean(page, 'refused submit', true);
+
+  // editor: justification field appears above the limit
+  await page.goto(`${WEB}/claims/${bad}/edit`);
+  await page.locator('textarea[id^=just-]').first().waitFor();
+  assert.match(await page.locator('label[for^=just-]').first().innerText(), /^Justification \(at least 20 characters, required above EUR /);
+  assert.equal(await page.locator('textarea[id^=just-]').count(), 1); // line 2 is within limit
+  await clean(page, 'editor with justification', true);
+
+  // flags: same date/category/amount on the claimant's other submitted claim
+  const today = new Date().toISOString().slice(0, 10);
+  const first = await mkClaim([line(100, today)]);
+  const second = await mkClaim([line(100, today)]);
+  for (const c of [first, second]) assert.equal((await fetch(`${WEB}/api/claims/${c}/submit`, { method: 'POST', headers: h })).status, 200);
+  await page.goto(`${WEB}/claims/${second}`);
+  await page.getByText('Possible duplicate (same date, category and amount)').waitFor();
+  assert.equal(await page.getByRole('link', { name: 'View earlier claim' }).getAttribute('href'), `/claims/${first}`);
+  await clean(page, 'detail with flag', true);
 });

@@ -3,7 +3,7 @@ import type { ErrorRequestHandler, RequestHandler } from 'express';
 import { serializeError, type Logger } from './logger.js';
 
 export class HttpError extends Error {
-  constructor(public readonly status: number, public readonly code: string, public readonly reason?: string) {
+  constructor(public readonly status: number, public readonly code: string, public readonly reason?: string, public readonly extra?: Record<string, unknown>) {
     super(code);
     this.name = 'HttpError';
   }
@@ -44,7 +44,7 @@ export const errorHandler: ErrorRequestHandler = (err, _req, res, _next) => {
   }
   if (err instanceof HttpError) {
     if (err.status >= 500) res.locals.error = err;
-    res.status(err.status).json(err.status < 500 && err.reason ? { error: err.code, reason: err.reason } : { error: err.code });
+    res.status(err.status).json(err.status < 500 ? { error: err.code, ...(err.reason ? { reason: err.reason } : {}), ...err.extra } : { error: err.code });
     return;
   }
   const s = err?.status ?? err?.statusCode;

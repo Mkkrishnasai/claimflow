@@ -1,9 +1,10 @@
-import type { PrismaClient } from '@prisma/client';
+import { Prisma, type PrismaClient } from '@prisma/client';
 import { HttpError } from '../middleware.js';
 import { requireClaimant, requireEditable, requireReadable } from './access.js';
 import type { ReceiptStore } from './receipt-storage.js';
 import { withWrite, type Clock, type Tx } from '../db.js';
 import { moveClaim } from './status.js';
+import { checkSubmit, pickDuplicates, SubmitRefused, utcToday, type Hit } from './policy.js';
 
 export interface ClaimDeps { prisma: PrismaClient; clock: Clock; receipts: ReceiptStore; beforeAppend?: () => void | Promise<void> /* test hook: fail the history insert */ }
 
@@ -22,7 +23,7 @@ function validDate(v: unknown): string {
   return v;
 }
 
-// Money is a safe integer end to end (NFR-DATA-1); reads only the four named fields (NFR-SEC-4).
+// Money is a safe integer end to end (NFR-DATA-1); reads only the five named fields (NFR-SEC-4).
 export function parseLine(raw: unknown, categories: ReadonlySet<string>) {
   const b = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
   const { amountCents, categoryCode } = b;
@@ -30,18 +31,21 @@ export function parseLine(raw: unknown, categories: ReadonlySet<string>) {
     throw bad('amountCents must be an integer from 1 to 1000000');
   }
   if (typeof categoryCode !== 'string' || !categories.has(categoryCode)) throw bad('categoryCode is unknown');
-  return { date: validDate(b.date), categoryCode, amountCents, description: text(b.description, 'description', 1, 200) };
+  const j = b.justification;
+  if (j !== undefined && j !== null && (typeof j !== 'string' || j.trim().length > 500)) throw bad('justification must be at most 500 characters');
+  return { date: validDate(b.date), categoryCode, amountCents, description: text(b.description, 'description', 1, 200), justification: (typeof j === 'string' && j.trim()) || null };
 }
 
-type LineRow = { id: string; position: number; date: string; categoryCode: string; amountCents: number; description: string; limitCents: number | null; receipts?: ReceiptRow[] };
+type LineRow = { id: string; position: number; date: string; categoryCode: string; amountCents: number; description: string; justification: string | null; limitCents: number | null; duplicateClaimId?: string | null; duplicateBasis?: string | null; receipts?: ReceiptRow[] };
 type ReceiptRow = { id: string; mime: string; sizeBytes: number; originalName: string | null; uploadedAt: Date };
 type EventRow = { seq: number; action: string; fromStatus: string; toStatus: string; reason: string | null; at: Date; actor: { id: string; name: string } };
 type ClaimRow = { id: string; claimantId: string; title: string; purpose: string; status: string; approverId: string | null; createdAt: Date; updatedAt: Date; submittedAt: Date | null; lines: LineRow[]; events?: EventRow[] };
 
 export function toClaimJson(c: ClaimRow, limits: ReadonlyMap<string, number>) {
   const lines = [...c.lines].sort((a, b) => a.position - b.position).map((l) => ({
-    id: l.id, position: l.position, date: l.date, categoryCode: l.categoryCode, amountCents: l.amountCents, description: l.description,
-    limitCents: l.limitCents, overLimit: l.amountCents > (l.limitCents ?? limits.get(l.categoryCode) ?? 0), receipts: (l.receipts ?? []).map((r) => ({ id: r.id, mime: r.mime, sizeBytes: r.sizeBytes, originalName: r.originalName, uploadedAt: r.uploadedAt })),
+    id: l.id, position: l.position, date: l.date, categoryCode: l.categoryCode, amountCents: l.amountCents, description: l.description, justification: l.justification,
+    limitCents: l.limitCents, overLimit: l.amountCents > (l.limitCents ?? limits.get(l.categoryCode) ?? 0),
+    duplicate: l.duplicateClaimId && l.duplicateBasis ? { claimId: l.duplicateClaimId, basis: l.duplicateBasis } : null, receipts: (l.receipts ?? []).map((r) => ({ id: r.id, mime: r.mime, sizeBytes: r.sizeBytes, originalName: r.originalName, uploadedAt: r.uploadedAt })),
   }));
   const { id, claimantId, title, purpose, status, approverId, createdAt, updatedAt, submittedAt } = c;
   return { id, claimantId, title, purpose, status, approverId, totalCents: lines.reduce((s, l) => s + l.amountCents, 0), lines, history: [...(c.events ?? [])].sort((a, b) => a.seq - b.seq).map((e) => ({ seq: e.seq, action: e.action, fromStatus: e.fromStatus, toStatus: e.toStatus, reason: e.reason, at: e.at, actor: { id: e.actor.id, name: e.actor.name } })), createdAt, updatedAt, submittedAt };
@@ -145,9 +149,9 @@ async function ownLine(tx: Tx, id: string, lineId: string) {
 export const editLine = (d: ClaimDeps, user: User, id: string, lineId: string, body: Record<string, unknown>) => withWrite(d.prisma, async (tx) => {
   await loadOwn(tx, user, id);
   const l = await ownLine(tx, id, lineId);
-  const pick = (k: 'date' | 'categoryCode' | 'amountCents' | 'description') => (body[k] !== undefined ? body[k] : l[k]);
+  const pick = (k: 'date' | 'categoryCode' | 'amountCents' | 'description' | 'justification') => (body[k] !== undefined ? body[k] : l[k]);
   const codes = new Set((await tx.category.findMany()).map((c) => c.code));
-  const line = parseLine({ date: pick('date'), categoryCode: pick('categoryCode'), amountCents: pick('amountCents'), description: pick('description') }, codes);
+  const line = parseLine({ date: pick('date'), categoryCode: pick('categoryCode'), amountCents: pick('amountCents'), description: pick('description'), justification: pick('justification') }, codes);
   await tx.claimLine.update({ where: { id: lineId }, data: line });
   await touch(tx, d, id);
   return reload(tx, id);
@@ -225,15 +229,40 @@ async function ownForMove(tx: Tx, user: User, id: string, from: string[]) {
   return c;
 }
 
+type DupLine = { id: string; date: string; categoryCode: string; amountCents: number; shas: string[] };
+
+// C-23: exactly one receipt.findMany and one $queryRaw per call, however many lines. Candidates are other non-draft claims.
+export async function findDuplicates(tx: Tx, claim: { id: string; claimantId: string }, lines: DupLine[]) {
+  const shas = [...new Set(lines.flatMap((l) => l.shas))];
+  const rs = shas.length ? await tx.receipt.findMany({ where: { sha256: { in: shas }, claim: { id: { not: claim.id }, status: { not: 'draft' } } }, select: { sha256: true, claimId: true, claim: { select: { submittedAt: true } } } }) : [];
+  const triples = [...new Map(lines.map((l) => [`${l.date}|${l.categoryCode}|${l.amountCents}`, l])).values()];
+  const ts = triples.length ? await tx.$queryRaw<{ date: string; categoryCode: string; amountCents: number; claimId: string; submittedAt: Date | number | string | null }[]>(Prisma.sql`
+    SELECT l."date", l."categoryCode", l."amountCents", l."claimId", c."submittedAt" FROM "ClaimLine" l JOIN "Claim" c ON c."id" = l."claimId"
+    WHERE c."claimantId" = ${claim.claimantId} AND c."status" <> 'draft' AND c."id" <> ${claim.id}
+    AND (${Prisma.join(triples.map((t) => Prisma.sql`(l."date" = ${t.date} AND l."categoryCode" = ${t.categoryCode} AND l."amountCents" = ${t.amountCents})`), ' OR ')})`) : [];
+  const at = (v: Date | number | string | null) => (v === null ? Infinity : new Date(v).getTime());
+  return pickDuplicates(lines.map((l) => ({
+    id: l.id,
+    receiptHits: rs.filter((r) => l.shas.includes(r.sha256)).map<Hit>((r) => ({ claimId: r.claimId, at: at(r.claim.submittedAt) })),
+    matchHits: ts.filter((t) => t.date === l.date && t.categoryCode === l.categoryCode && t.amountCents === l.amountCents).map<Hit>((t) => ({ claimId: t.claimId, at: at(t.submittedAt) })),
+  })));
+}
+
 export const submitClaim = (d: ClaimDeps, user: User, id: string) => withWrite(d.prisma, async (tx) => {
   const c = await ownForMove(tx, user, id, ['draft', 'rejected']);
   const mgr = c.claimant.manager;
   if (!mgr) throw new HttpError(409, 'no_manager', 'A user with no manager cannot submit claims');
   if (!mgr.active) throw new HttpError(409, 'manager_inactive');
-  if (await tx.claimLine.count({ where: { claimId: id } }) < 1) throw new HttpError(422, 'no_lines');
   const now = d.clock();
+  const full = await tx.claim.findUniqueOrThrow({ where: { id }, select: { title: true, purpose: true, lines: { select: { id: true, position: true, date: true, categoryCode: true, amountCents: true, justification: true, receipts: { select: { sha256: true } } } } } });
+  const cats = await tx.category.findMany({ select: { code: true, limitCents: true } });
+  const failures = checkSubmit({ ...full, lines: full.lines.map(({ receipts, ...l }) => ({ ...l, receiptCount: receipts.length })) }, new Map(cats.map((x) => [x.code, x.limitCents])), utcToday(now));
+  if (failures.length) throw new SubmitRefused(failures, c.status); // before the first write
+  const dups = await findDuplicates(tx, { id, claimantId: c.claimantId }, full.lines.map((l) => ({ ...l, shas: l.receipts.map((r) => r.sha256) })));
   const ev = await moveClaim(tx, { claimId: id, action: c.status === 'draft' ? 'submit' : 'resubmit', actorId: user!.id, now, set: { approverId: mgr.id, submittedAt: now, updatedAt: now }, beforeAppend: d.beforeAppend });
-  await tx.$executeRaw`UPDATE "ClaimLine" SET "limitCents" = (SELECT "limitCents" FROM "Category" WHERE "code" = "ClaimLine"."categoryCode") WHERE "claimId" = ${id}`;
+  // One UPDATE: snapshot the limit and overwrite (or clear) both duplicate flags on every line.
+  const flag = (col: 'claimId' | 'basis') => (dups.size ? Prisma.sql`CASE "id" ${Prisma.join([...dups].map(([lid, v]) => Prisma.sql`WHEN ${lid} THEN ${v[col]}`), ' ')} ELSE NULL END` : Prisma.sql`NULL`);
+  await tx.$executeRaw`UPDATE "ClaimLine" SET "limitCents" = (SELECT "limitCents" FROM "Category" WHERE "code" = "ClaimLine"."categoryCode"), "duplicateClaimId" = ${flag('claimId')}, "duplicateBasis" = ${flag('basis')} WHERE "claimId" = ${id}`;
   return { claim: await reload(tx, id), ev };
 });
 
@@ -242,5 +271,6 @@ export const withdrawClaim = (d: ClaimDeps, user: User, id: string, body: Record
   const reason = body.reason === undefined || body.reason === null ? null : typeof body.reason === 'string' && body.reason.length <= 500 ? body.reason : (() => { throw bad('reason must be at most 500 characters'); })();
   const now = d.clock();
   const ev = await moveClaim(tx, { claimId: id, action: 'withdraw', actorId: user!.id, reason, now, set: { approverId: null, submittedAt: null, updatedAt: now }, beforeAppend: d.beforeAppend });
+  await tx.claimLine.updateMany({ where: { claimId: id }, data: { duplicateClaimId: null, duplicateBasis: null } });
   return { claim: await reload(tx, id), ev };
 });

@@ -118,3 +118,12 @@ test('AC-2 raw UPDATE/DELETE on ClaimEvent and deleting a user or claim with eve
   assert.equal(await prisma.user.count({ where: { id: 'emp' } }), 1);
   assert.equal(await prisma.claim.count({ where: { id: c.id } }), 1);
 });
+
+test('CLAIM-4 S1 submit_policy migration is additive and T1..T10 survive', async () => {
+  const dir = (await import('node:fs')).readdirSync('prisma/migrations').find((n) => n.endsWith('_submit_policy'))!;
+  const m = (await import('node:fs')).readFileSync(`prisma/migrations/${dir}/migration.sql`, 'utf8');
+  assert.equal((m.match(/ALTER TABLE "ClaimLine" ADD COLUMN/g) ?? []).length, 3);
+  assert.equal((m.match(/CREATE INDEX "ClaimLine_date_categoryCode_amountCents_idx"/g) ?? []).length, 1);
+  assert.doesNotMatch(m, /DROP TABLE|PRAGMA foreign_keys|new_ClaimLine/);
+  assert.equal(((await prisma.$queryRawUnsafe(`SELECT name FROM sqlite_master WHERE type = 'trigger'`)) as unknown[]).length, 10);
+});

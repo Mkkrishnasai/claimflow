@@ -132,10 +132,14 @@ model ClaimLine {
   amountCents  Int
   description  String
   limitCents   Int?
+  justification    String?
+  duplicateClaimId String?
+  duplicateBasis   String?
   receipts     Receipt[]
 
   @@unique([claimId, position])
   @@unique([id, claimId])
+  @@index([date, categoryCode, amountCents])
 }
 
 model Receipt {

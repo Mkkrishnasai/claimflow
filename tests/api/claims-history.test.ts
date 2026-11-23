@@ -48,7 +48,7 @@ const call = (s: S, method: string, path: string, body: unknown = {}) =>
 
 test('AC-1 submit, withdraw, submit: history in seq order with actor, readable only by allowed callers', async () => {
   const emp = await signIn('emp');
-  await prisma.claim.create({ data: { id: 'h1', claimantId: 'emp', title: 'T', purpose: 'Some purpose text', status: 'draft', createdAt: new Date(0), updatedAt: new Date(0), lines: { create: [{ position: 1, date: '2026-03-01', categoryCode: 'meals', amountCents: 1000, description: 'x' }] } } });
+  await prisma.claim.create({ data: { id: 'h1', claimantId: 'emp', title: 'T', purpose: 'Some purpose text', status: 'draft', createdAt: new Date(0), updatedAt: new Date(0), lines: { create: [{ position: 1, date: '2025-12-25', categoryCode: 'meals', amountCents: 1000, description: 'x' }] } } });
   assert.equal((await call(emp, 'POST', '/claims/h1/submit')).status, 200);
   assert.equal((await call(emp, 'POST', '/claims/h1/withdraw', { reason: 'changed my mind' })).status, 200);
   assert.equal((await call(emp, 'POST', '/claims/h1/submit')).status, 200);

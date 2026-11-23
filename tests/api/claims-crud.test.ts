@@ -243,3 +243,36 @@ test('S3 AC-5 51st line refused; patch is atomic and validated', async () => {
   assert.equal((await call(s, 'PATCH', `/claims/${c.id}/lines/nope`, { amountCents: 5 })).status, 404);
   assert.equal((await call(s, 'PATCH', `/claims/${c.id}`, { purpose: 'short' })).status, 422);
 });
+
+test('CLAIM-4 S1 justification: stored on add, null clears, omitted keeps, 501/number refused, blank -> null, server fields ignored', async () => {
+  const s = await signIn('emp');
+  const c = await mk('draft');
+  const id = c.lines[0].id, base = `/claims/${c.id}/lines`;
+  let r = await call(s, 'POST', base, line({ justification: 'Client dinner, 6 guests' }));
+  assert.equal(r.status, 201);
+  const added = ((await r.json()) as J).lines[1];
+  assert.equal(added.justification, 'Client dinner, 6 guests'); assert.equal(added.overLimit, false);
+  r = await call(s, 'PATCH', `${base}/${added.id}`, { description: 'x' });
+  assert.equal(((await r.json()) as J).lines[1].justification, 'Client dinner, 6 guests');
+  r = await call(s, 'PATCH', `${base}/${added.id}`, { justification: null });
+  assert.equal(((await r.json()) as J).lines[1].justification, null);
+  const before = await prisma.claimLine.findMany({ orderBy: { id: 'asc' } });
+  for (const justification of ['x'.repeat(501), 7]) {
+    for (const [m, p, b] of [['POST', base, line({ justification })], ['PATCH', `${base}/${id}`, { justification }]] as [string, string, unknown][]) {
+      r = await call(s, m, p, b);
+      assert.equal(r.status, 422); const j = (await r.json()) as J;
+      assert.equal(j.error, 'invalid_input'); assert.equal(j.reason, 'justification must be at most 500 characters');
+    }
+  }
+  assert.deepEqual(await prisma.claimLine.findMany({ orderBy: { id: 'asc' } }), before);
+  r = await call(s, 'PATCH', `${base}/${id}`, { justification: 'y'.repeat(500) });
+  assert.equal(r.status, 200);
+  r = await call(s, 'PATCH', `${base}/${id}`, { justification: '   ', duplicateClaimId: 'x', duplicateBasis: 'match', overLimit: true, status: 'paid' });
+  assert.equal(r.status, 200);
+  const row = (await prisma.claimLine.findUnique({ where: { id } }))!;
+  assert.equal(row.justification, null); assert.equal(row.duplicateClaimId, null); assert.equal(row.duplicateBasis, null);
+  assert.equal((await prisma.claim.findUnique({ where: { id: c.id } }))!.status, 'draft');
+  r = await call(s, 'PATCH', `${base}/${id}`, { amountCents: 5000, justification: 'a'.repeat(25) });
+  const l = ((await r.json()) as J).lines[0];
+  assert.equal(l.justification, 'a'.repeat(25)); assert.equal(l.overLimit, false);
+});
