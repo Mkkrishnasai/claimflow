@@ -3,8 +3,9 @@ import { HttpError } from '../middleware.js';
 import { requireClaimant, requireEditable, requireReadable } from './access.js';
 import type { ReceiptStore } from './receipt-storage.js';
 import { withWrite, type Clock, type Tx } from '../db.js';
+import { moveClaim } from './status.js';
 
-export interface ClaimDeps { prisma: PrismaClient; clock: Clock; receipts: ReceiptStore }
+export interface ClaimDeps { prisma: PrismaClient; clock: Clock; receipts: ReceiptStore; beforeAppend?: () => void | Promise<void> /* test hook: fail the history insert */ }
 
 const bad = (reason: string) => new HttpError(422, 'invalid_input', reason);
 const text = (v: unknown, field: string, min: number, max: number): string => {
@@ -212,4 +213,34 @@ export const addReceiptRow = (d: ClaimDeps, user: User, id: string, lineId: stri
   const r = await tx.receipt.create({ data: { lineId, claimId: id, uploadedById: user!.id, uploadedAt: d.clock(), ...f } });
   await touch(tx, d, id);
   return { id: r.id, mime: r.mime, sizeBytes: r.sizeBytes, originalName: r.originalName };
+});
+
+// E-31 / E-32. 404, 403 non-claimant, 409 status, then the specific refusals; every check precedes the write.
+async function ownForMove(tx: Tx, user: User, id: string, from: string[]) {
+  const c = await tx.claim.findUnique({ where: { id }, select: { id: true, claimantId: true, status: true, claimant: { select: { manager: { select: { id: true, active: true } } } } } });
+  if (!c) throw new HttpError(404, 'not_found');
+  requireClaimant(user, c);
+  if (c.status === 'paid') throw new HttpError(409, 'claim_paid');
+  if (!from.includes(c.status)) throw new HttpError(409, 'invalid_transition');
+  return c;
+}
+
+export const submitClaim = (d: ClaimDeps, user: User, id: string) => withWrite(d.prisma, async (tx) => {
+  const c = await ownForMove(tx, user, id, ['draft', 'rejected']);
+  const mgr = c.claimant.manager;
+  if (!mgr) throw new HttpError(409, 'no_manager', 'A user with no manager cannot submit claims');
+  if (!mgr.active) throw new HttpError(409, 'manager_inactive');
+  if (await tx.claimLine.count({ where: { claimId: id } }) < 1) throw new HttpError(422, 'no_lines');
+  const now = d.clock();
+  const ev = await moveClaim(tx, { claimId: id, action: c.status === 'draft' ? 'submit' : 'resubmit', actorId: user!.id, now, set: { approverId: mgr.id, submittedAt: now, updatedAt: now }, beforeAppend: d.beforeAppend });
+  await tx.$executeRaw`UPDATE "ClaimLine" SET "limitCents" = (SELECT "limitCents" FROM "Category" WHERE "code" = "ClaimLine"."categoryCode") WHERE "claimId" = ${id}`;
+  return { claim: await reload(tx, id), ev };
+});
+
+export const withdrawClaim = (d: ClaimDeps, user: User, id: string, body: Record<string, unknown>) => withWrite(d.prisma, async (tx) => {
+  await ownForMove(tx, user, id, ['submitted']);
+  const reason = body.reason === undefined || body.reason === null ? null : typeof body.reason === 'string' && body.reason.length <= 500 ? body.reason : (() => { throw bad('reason must be at most 500 characters'); })();
+  const now = d.clock();
+  const ev = await moveClaim(tx, { claimId: id, action: 'withdraw', actorId: user!.id, reason, now, set: { approverId: null, submittedAt: null, updatedAt: now }, beforeAppend: d.beforeAppend });
+  return { claim: await reload(tx, id), ev };
 });
