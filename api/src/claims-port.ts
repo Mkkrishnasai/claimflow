@@ -8,7 +8,7 @@ export interface Claim { id: string; claimantId: string; approverId: string | nu
 export interface ClaimStore {
   get(tx: Tx, id: string): Promise<Claim | null>;
   listWaitingOn(tx: Tx, userId: string): Promise<Claim[]>;
-  reassign(tx: Tx, ids: string[], approverId: string): Promise<void>;
+  reassign(tx: Tx, ids: string[], approverId: string, actorId: string): Promise<void>;
 }
 
 export const NoClaimStore: ClaimStore = {
@@ -31,7 +31,7 @@ export class FixtureClaimStore implements ClaimStore {
   async listWaitingOn(_tx: Tx, userId: string) {
     return [...this.rows.values()].filter((c) => c.approverId === userId && c.status === 'submitted');
   }
-  async reassign(_tx: Tx, ids: string[], approverId: string) {
+  async reassign(_tx: Tx, ids: string[], approverId: string, _actorId?: string) {
     for (const id of ids) { const c = this.rows.get(id); if (c) c.approverId = approverId; }
   }
 }
