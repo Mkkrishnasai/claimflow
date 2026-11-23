@@ -1,6 +1,7 @@
+import type { ClaimStatus } from '@prisma/client';
 import type { Tx } from './db.js';
 
-export type ClaimStatus = 'draft' | 'submitted' | 'approved' | 'rejected' | 'paid';
+export type { ClaimStatus };
 export interface Claim { id: string; claimantId: string; approverId: string | null; status: ClaimStatus }
 
 // C-20. Methods take tx (ADR-18); S9 uses listWaitingOn and reassign.

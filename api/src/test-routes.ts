@@ -1,6 +1,7 @@
 import express, { Router } from 'express';
 import type { PrismaClient } from '@prisma/client';
-import { canReadClaim, mount, type RouteDef } from './auth/authz.js';
+import { mount, type RouteDef } from './auth/authz.js';
+import { requireReadable } from './claims/access.js';
 import { authenticate } from './auth/session.js';
 import { FixtureClaimStore, type ClaimStatus } from './claims-port.js';
 import type { Clock } from './db.js';
@@ -23,7 +24,7 @@ testRouter.get('/__test/error', (req, res, next) => {
 });
 
 export const claimStore = new FixtureClaimStore();
-const STATUSES = ['draft', 'submitted', 'approved', 'rejected', 'paid'];
+const STATUSES = ['draft', 'submitted', 'approved', 'rejected', 'ready_to_pay', 'paid'];
 
 // E-16..E-18, mounted only under NODE_ENV=test. Authenticated like /api routes.
 export const claimTestRouteDefs = (prisma: PrismaClient): RouteDef[] => [
@@ -39,15 +40,7 @@ export const claimTestRouteDefs = (prisma: PrismaClient): RouteDef[] => [
   { method: 'get', path: '/__test/claims/:id', data: 'claim', write: false, handler: async (req, res) => {
     const c = await claimStore.get(prisma as never, req.params.id as string);
     if (!c) throw new HttpError(404, 'not_found'); // Q-5: any authenticated caller
-    // load the claimant's two nearest managers; that is all depth 1-2 needs
-    const chain = new Map<string, string | null>();
-    let cur: string | null = c.claimantId;
-    for (let i = 0; i < 2 && cur; i++) {
-      const row: { managerId: string | null } | null = await prisma.user.findUnique({ where: { id: cur }, select: { managerId: true } });
-      chain.set(cur, row?.managerId ?? null);
-      cur = row?.managerId ?? null;
-    }
-    if (!req.user || !canReadClaim(req.user, c, (id) => chain.get(id) ?? null)) throw new HttpError(403, 'forbidden');
+    await requireReadable(prisma, req.user, c);
     res.json(c);
   } },
 ];

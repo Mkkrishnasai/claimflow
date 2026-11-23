@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { mount, type RouteDef } from '../auth/authz.js';
 import { HttpError } from '../middleware.js';
-import { createClaim, listCategories, listMine, type ClaimDeps } from './service.js';
+import { createClaim, getClaim, listCategories, listMine, type ClaimDeps } from './service.js';
 
 export const claimRouteDefs = (d: ClaimDeps): RouteDef[] => [
   // E-19
@@ -19,6 +19,10 @@ export const claimRouteDefs = (d: ClaimDeps): RouteDef[] => [
     const c = await createClaim(d, req.user.id, req.body ?? {});
     res.locals.logFields = { claimEvent: 'claim_created', claimId: c.id, from: null, to: 'draft' };
     res.status(201).location(`/api/claims/${c.id}`).json(c);
+  } },
+  // E-22: 404 unknown, 403 not allowed (canReadClaim)
+  { method: 'get', path: '/claims/:id', data: 'claim', write: false, handler: async (req, res) => {
+    res.json(await getClaim(d, req.user, req.params.id as string));
   } },
 ];
 

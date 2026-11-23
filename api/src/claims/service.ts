@@ -1,5 +1,6 @@
 import type { PrismaClient } from '@prisma/client';
 import { HttpError } from '../middleware.js';
+import { requireReadable } from './access.js';
 import { withWrite, type Clock } from '../db.js';
 
 export interface ClaimDeps { prisma: PrismaClient; clock: Clock }
@@ -30,16 +31,18 @@ export function parseLine(raw: unknown, categories: ReadonlySet<string>) {
   return { date: validDate(b.date), categoryCode, amountCents, description: text(b.description, 'description', 1, 200) };
 }
 
-type LineRow = { id: string; position: number; date: string; categoryCode: string; amountCents: number; description: string; limitCents: number | null };
-type ClaimRow = { id: string; claimantId: string; title: string; purpose: string; status: string; approverId: string | null; createdAt: Date; updatedAt: Date; submittedAt: Date | null; lines: LineRow[] };
+type LineRow = { id: string; position: number; date: string; categoryCode: string; amountCents: number; description: string; limitCents: number | null; receipts?: ReceiptRow[] };
+type ReceiptRow = { id: string; mime: string; sizeBytes: number; originalName: string | null; uploadedAt: Date };
+type EventRow = { seq: number; action: string; fromStatus: string; toStatus: string; reason: string | null; at: Date; actor: { name: string } };
+type ClaimRow = { id: string; claimantId: string; title: string; purpose: string; status: string; approverId: string | null; createdAt: Date; updatedAt: Date; submittedAt: Date | null; lines: LineRow[]; events?: EventRow[] };
 
 export function toClaimJson(c: ClaimRow, limits: ReadonlyMap<string, number>) {
   const lines = [...c.lines].sort((a, b) => a.position - b.position).map((l) => ({
     id: l.id, position: l.position, date: l.date, categoryCode: l.categoryCode, amountCents: l.amountCents, description: l.description,
-    limitCents: l.limitCents, overLimit: l.amountCents > (l.limitCents ?? limits.get(l.categoryCode) ?? 0), receipts: [] as unknown[],
+    limitCents: l.limitCents, overLimit: l.amountCents > (l.limitCents ?? limits.get(l.categoryCode) ?? 0), receipts: (l.receipts ?? []).map((r) => ({ id: r.id, mime: r.mime, sizeBytes: r.sizeBytes, originalName: r.originalName, uploadedAt: r.uploadedAt })),
   }));
   const { id, claimantId, title, purpose, status, approverId, createdAt, updatedAt, submittedAt } = c;
-  return { id, claimantId, title, purpose, status, approverId, totalCents: lines.reduce((s, l) => s + l.amountCents, 0), lines, history: [] as unknown[], createdAt, updatedAt, submittedAt };
+  return { id, claimantId, title, purpose, status, approverId, totalCents: lines.reduce((s, l) => s + l.amountCents, 0), lines, history: [...(c.events ?? [])].sort((a, b) => a.seq - b.seq).map((e) => ({ seq: e.seq, action: e.action, fromStatus: e.fromStatus, toStatus: e.toStatus, reason: e.reason, at: e.at, actorName: e.actor.name })), createdAt, updatedAt, submittedAt };
 }
 
 // E-19
@@ -77,4 +80,16 @@ export async function listMine(d: ClaimDeps, userId: string, q: { limit?: unknow
     select: { id: true, title: true, status: true, updatedAt: true, lines: { select: { amountCents: true } } },
   });
   return rows.map((r) => ({ id: r.id, title: r.title, status: r.status, totalCents: r.lines.reduce((s, l) => s + l.amountCents, 0), lineCount: r.lines.length, updatedAt: r.updatedAt }));
+}
+
+// E-22. One query (no N+1); 404 before 403 (architecture section 6).
+export async function getClaim(d: ClaimDeps, user: { id: string; role: string } | undefined, id: string) {
+  const c = await d.prisma.claim.findUnique({
+    where: { id },
+    include: { lines: { include: { receipts: true } }, events: { include: { actor: { select: { name: true } } } } },
+  });
+  if (!c) throw new HttpError(404, 'not_found');
+  await requireReadable(d.prisma, user, c);
+  const cats = await d.prisma.category.findMany({ select: { code: true, limitCents: true } });
+  return toClaimJson(c, new Map(cats.map((x) => [x.code, x.limitCents])));
 }
