@@ -15,13 +15,54 @@ enum Role {
 }
 
 model User {
-  id           String  @id @default(uuid())
-  email        String  @unique
-  passwordHash String
+  id           String         @id @default(uuid())
+  email        String         @unique
+  passwordHash String?
+  name         String
+  active       Boolean        @default(true)
   role         Role
   managerId    String?
-  manager      User?   @relation("Hierarchy", fields: [managerId], references: [id], onDelete: Restrict)
-  reports      User[]  @relation("Hierarchy")
+  manager      User?          @relation("Hierarchy", fields: [managerId], references: [id], onDelete: Restrict)
+  reports      User[]         @relation("Hierarchy")
+  tokens       OneTimeToken[]
+  sessions     Session[]
 
   @@index([managerId])
+}
+
+enum TokenPurpose {
+  set_password
+  reset
+}
+
+model OneTimeToken {
+  hash      String       @id
+  userId    String
+  user      User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  purpose   TokenPurpose
+  expiresAt DateTime
+  usedAt    DateTime?
+
+  @@index([userId])
+}
+
+model Session {
+  idHash     String   @id
+  csrfHash   String
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt  DateTime
+  lastSeenAt DateTime
+
+  @@index([userId])
+}
+
+model LoginAttempt {
+  kind        String
+  email       String
+  windowStart DateTime
+  count       Int
+  lockedUntil DateTime?
+
+  @@id([kind, email])
 }
