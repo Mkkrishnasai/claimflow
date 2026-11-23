@@ -2,7 +2,7 @@ import { Router } from 'express';
 import type { PrismaClient } from '@prisma/client';
 import { HttpError } from '../middleware.js';
 import { withWrite, type Clock } from '../db.js';
-import { randomToken, sha256, verifyPassword } from './secrets.js';
+import { hashPassword, needsRehash, randomToken, sha256, verifyPassword } from './secrets.js';
 import { clearCookie, csrfFor, parseCookies, setCookie } from './session.js';
 
 const invalid = () => new HttpError(401, 'invalid_credentials');
@@ -23,18 +23,22 @@ export function authRoutes(prisma: PrismaClient, clock: Clock): Router {
     if (typeof email !== 'string' || typeof password !== 'string' || email.length > 254) throw new HttpError(400, 'bad_request');
     const user = await prisma.user.findUnique({ where: { email: email.trim().toLowerCase() } });
     const hash = user?.active ? user.passwordHash : null;
+    res.locals.logFields = { authEvent: 'sign_in_failed', ...(user && { userId: user.id }) };
     if (!(await verifyPassword(password, hash)) || !user) throw invalid();
+    const upgraded = hash && needsRehash(hash) ? await hashPassword(password) : null; // bcrypt outside withWrite (ADR-17)
     const sid = randomToken();
     const old = parseCookies(req.headers.cookie).sid;
     const now = clock();
     await withWrite(prisma, async (tx) => {
       const u = await tx.user.findUnique({ where: { id: user.id } });
       if (!u?.active || u.passwordHash !== hash) throw invalid();
+      if (upgraded) await tx.user.update({ where: { id: u.id }, data: { passwordHash: upgraded } });
       if (old) await tx.session.deleteMany({ where: { idHash: sha256(old) } });
       await tx.session.create({
         data: { idHash: sha256(sid), csrfHash: '', userId: u.id, createdAt: now, lastSeenAt: now }, // csrfHash unused: ADR-14 derives the token
       });
     });
+    res.locals.logFields = { authEvent: 'sign_in_ok', userId: user.id };
     setCookie(res, 'sid', sid);
     clearCookie(res, 'csrf_pre');
     res.json({ id: user.id, name: user.name, role: user.role, csrfToken: csrfFor(sid) });
