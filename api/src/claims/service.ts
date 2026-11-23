@@ -22,7 +22,7 @@ function validDate(v: unknown): string {
   return v;
 }
 
-// Money is a safe integer end to end (NFR-DATA-1); reads only the four named fields (NFR-SEC-4).
+// Money is a safe integer end to end (NFR-DATA-1); reads only the five named fields (NFR-SEC-4).
 export function parseLine(raw: unknown, categories: ReadonlySet<string>) {
   const b = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
   const { amountCents, categoryCode } = b;
@@ -30,17 +30,19 @@ export function parseLine(raw: unknown, categories: ReadonlySet<string>) {
     throw bad('amountCents must be an integer from 1 to 1000000');
   }
   if (typeof categoryCode !== 'string' || !categories.has(categoryCode)) throw bad('categoryCode is unknown');
-  return { date: validDate(b.date), categoryCode, amountCents, description: text(b.description, 'description', 1, 200) };
+  const j = b.justification;
+  if (j !== undefined && j !== null && (typeof j !== 'string' || j.trim().length > 500)) throw bad('justification must be at most 500 characters');
+  return { date: validDate(b.date), categoryCode, amountCents, description: text(b.description, 'description', 1, 200), justification: (typeof j === 'string' && j.trim()) || null };
 }
 
-type LineRow = { id: string; position: number; date: string; categoryCode: string; amountCents: number; description: string; limitCents: number | null; receipts?: ReceiptRow[] };
+type LineRow = { id: string; position: number; date: string; categoryCode: string; amountCents: number; description: string; justification: string | null; limitCents: number | null; receipts?: ReceiptRow[] };
 type ReceiptRow = { id: string; mime: string; sizeBytes: number; originalName: string | null; uploadedAt: Date };
 type EventRow = { seq: number; action: string; fromStatus: string; toStatus: string; reason: string | null; at: Date; actor: { id: string; name: string } };
 type ClaimRow = { id: string; claimantId: string; title: string; purpose: string; status: string; approverId: string | null; createdAt: Date; updatedAt: Date; submittedAt: Date | null; lines: LineRow[]; events?: EventRow[] };
 
 export function toClaimJson(c: ClaimRow, limits: ReadonlyMap<string, number>) {
   const lines = [...c.lines].sort((a, b) => a.position - b.position).map((l) => ({
-    id: l.id, position: l.position, date: l.date, categoryCode: l.categoryCode, amountCents: l.amountCents, description: l.description,
+    id: l.id, position: l.position, date: l.date, categoryCode: l.categoryCode, amountCents: l.amountCents, description: l.description, justification: l.justification,
     limitCents: l.limitCents, overLimit: l.amountCents > (l.limitCents ?? limits.get(l.categoryCode) ?? 0), receipts: (l.receipts ?? []).map((r) => ({ id: r.id, mime: r.mime, sizeBytes: r.sizeBytes, originalName: r.originalName, uploadedAt: r.uploadedAt })),
   }));
   const { id, claimantId, title, purpose, status, approverId, createdAt, updatedAt, submittedAt } = c;
@@ -145,9 +147,9 @@ async function ownLine(tx: Tx, id: string, lineId: string) {
 export const editLine = (d: ClaimDeps, user: User, id: string, lineId: string, body: Record<string, unknown>) => withWrite(d.prisma, async (tx) => {
   await loadOwn(tx, user, id);
   const l = await ownLine(tx, id, lineId);
-  const pick = (k: 'date' | 'categoryCode' | 'amountCents' | 'description') => (body[k] !== undefined ? body[k] : l[k]);
+  const pick = (k: 'date' | 'categoryCode' | 'amountCents' | 'description' | 'justification') => (body[k] !== undefined ? body[k] : l[k]);
   const codes = new Set((await tx.category.findMany()).map((c) => c.code));
-  const line = parseLine({ date: pick('date'), categoryCode: pick('categoryCode'), amountCents: pick('amountCents'), description: pick('description') }, codes);
+  const line = parseLine({ date: pick('date'), categoryCode: pick('categoryCode'), amountCents: pick('amountCents'), description: pick('description'), justification: pick('justification') }, codes);
   await tx.claimLine.update({ where: { id: lineId }, data: line });
   await touch(tx, d, id);
   return reload(tx, id);
