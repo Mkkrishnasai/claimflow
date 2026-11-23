@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { canReadUser, mount, requireAdmin, type RouteDef } from '../auth/authz.js';
 import { HttpError } from '../middleware.js';
-import { createUser, getUser, listUsers, resendLink, setManager, type UserDeps } from './service.js';
+import { createUser, deactivateUser, getUser, listUsers, resendLink, setManager, type UserDeps } from './service.js';
 
 export const userRouteDefs = (d: UserDeps): RouteDef[] => [
   // E-10
@@ -30,6 +30,13 @@ export const userRouteDefs = (d: UserDeps): RouteDef[] => [
     requireAdmin(req.user);
     await resendLink(d, req.params.id as string);
     res.status(204).end();
+  } },
+  // E-15
+  { method: 'post', path: '/users/:id/deactivate', data: 'user', write: true, handler: async (req, res) => {
+    requireAdmin(req.user);
+    const r = await deactivateUser(d, req.params.id as string);
+    res.locals.logFields = { authEvent: 'deactivated', userId: r.id, reassignedClaims: r.reassignedClaims };
+    res.json(r);
   } },
 ];
 

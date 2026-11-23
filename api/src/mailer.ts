@@ -2,7 +2,10 @@ import nodemailer from 'nodemailer';
 import type { Config } from './config.js';
 
 export type LinkKind = 'set_password' | 'reset';
-export interface Mailer { linkMail(kind: LinkKind, to: string, url: string): Promise<void> }
+export interface Mailer {
+  linkMail(kind: LinkKind, to: string, url: string): Promise<void>;
+  reassignedMail(to: string, claimId: string): Promise<void>;
+}
 
 const SUBJECT: Record<LinkKind, string> = { set_password: 'Set your ClaimFlow password', reset: 'Reset your ClaimFlow password' };
 
@@ -19,6 +22,12 @@ export function createMailer(config: Pick<Config, 'smtp'>): Mailer {
       await transport.sendMail({
         from: 'ClaimFlow <no-reply@claimflow.local>', to, subject: SUBJECT[kind],
         text: `Use this link within ${kind === 'reset' ? '1 hour' : '24 hours'}: ${url}\n`, // wording provisional (Q-6)
+      });
+    },
+    async reassignedMail(to, claimId) {
+      await transport.sendMail({
+        from: 'ClaimFlow <no-reply@claimflow.local>', to, subject: 'Your claim has a new approver',
+        text: `Claim ${claimId} now waits on a different approver because the previous one left.\n`,
       });
     },
   };
