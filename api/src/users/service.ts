@@ -13,6 +13,28 @@ export const publicUser = (u: { id: string; name: string; email: string; role: R
 
 export interface UserDeps { prisma: PrismaClient; clock: Clock; mailer: Mailer; publicBaseUrl: string }
 
+// E-13. Loop walk and write share one withWrite transaction; walk bounded by user count.
+export async function setManager(d: UserDeps, id: string, body: Record<string, unknown>) {
+  const { managerId } = body;
+  if (managerId !== null && typeof managerId !== 'string') throw bad('managerId must be a string or null');
+  const u = await withWrite(d.prisma, async (tx) => {
+    if (!(await tx.user.findUnique({ where: { id } }))) throw new HttpError(404, 'not_found');
+    if (managerId !== null) {
+      const m = await tx.user.findUnique({ where: { id: managerId } });
+      if (!m) throw new HttpError(409, 'hierarchy_violation', 'manager does not exist');
+      if (!m.active) throw new HttpError(409, 'hierarchy_violation', 'manager is inactive');
+      let cur: string | null = managerId;
+      for (let n = await tx.user.count(); cur && n >= 0; n--) {
+        if (cur === id) throw new HttpError(409, 'hierarchy_violation', 'manager assignment would create a loop');
+        cur = (await tx.user.findUnique({ where: { id: cur }, select: { managerId: true } }))?.managerId ?? null;
+      }
+      if (m.role !== 'manager') throw new HttpError(409, 'hierarchy_violation', 'manager must have role manager'); // Q-13
+    }
+    return tx.user.update({ where: { id }, data: { managerId } });
+  });
+  return publicUser(u);
+}
+
 // E-12. Row + token commit together; the email goes out after commit, and its failure never undoes the user.
 export async function createUser(d: UserDeps, body: Record<string, unknown>) {
   const { name, email, role, managerId } = body;

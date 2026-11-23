@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { HttpError } from '../middleware.js';
-import { createUser, type UserDeps } from './service.js';
+import { createUser, setManager, type UserDeps } from './service.js';
 
 const adminOnly = (req: Express.Request) => {
   if (req.user?.role !== 'admin') throw new HttpError(403, 'forbidden');
@@ -13,6 +13,11 @@ export function userRoutes(d: UserDeps): Router {
     adminOnly(req);
     const u = await createUser(d, req.body ?? {});
     res.status(201).location(`/api/users/${u.id}`).json(u);
+  });
+  // E-13
+  r.patch('/users/:id/manager', async (req, res) => {
+    adminOnly(req);
+    res.json(await setManager(d, req.params.id, req.body ?? {}));
   });
   return r;
 }
