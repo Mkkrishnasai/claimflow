@@ -5,7 +5,7 @@ import { mount, type RouteDef } from '../auth/authz.js';
 import { HttpError } from '../middleware.js';
 import { SubmitRefused } from './policy.js';
 import { sniff } from './receipt-storage.js';
-import { addLine, approveClaim, addReceiptRow, precheckReceipt, createClaim, deleteClaim, deleteLine, deleteReceipt, receiptForRead, editClaim, editLine, getClaim, listApprovals, listCategories, listMine, submitClaim, withdrawClaim, type ClaimDeps } from './service.js';
+import { addLine, approveClaim, addReceiptRow, precheckReceipt, createClaim, deleteClaim, deleteLine, deleteReceipt, receiptForRead, editClaim, editLine, getClaim, listApprovals, listCategories, listMine, rejectClaim, submitClaim, withdrawClaim, type ClaimDeps } from './service.js';
 
 export const claimRouteDefs = (d: ClaimDeps): RouteDef[] => [
   // E-19
@@ -77,6 +77,12 @@ export const claimRouteDefs = (d: ClaimDeps): RouteDef[] => [
   // E-34: authority comes from approverId in the database; the body is never read
   { method: 'post', path: '/claims/:id/approve', data: 'claim', write: true, handler: async (req, res) => {
     const { claim, ev } = await approveClaim(d, req.user, req.params.id as string);
+    res.locals.logFields = { claimEvent: ev.action, claimId: claim.id, from: ev.from, to: ev.to };
+    res.json(claim);
+  } },
+  // E-35: same authority rules as approve; only `reason` is read from the body
+  { method: 'post', path: '/claims/:id/reject', data: 'claim', write: true, handler: async (req, res) => {
+    const { claim, ev } = await rejectClaim(d, req.user, req.params.id as string, req.body ?? {});
     res.locals.logFields = { claimEvent: ev.action, claimId: claim.id, from: ev.from, to: ev.to };
     res.json(claim);
   } },

@@ -6,7 +6,7 @@ import { withWrite, type Clock, type Tx } from '../db.js';
 import { moveClaim } from './status.js';
 import { canReadClaim } from '../auth/authz.js';
 import { nearestActiveAbove } from '../users/service.js';
-import { checkActor, decideApproval } from './approval.js';
+import { checkActor, decideApproval, rejectAction } from './approval.js';
 import { checkSubmit, pickDuplicates, SubmitRefused, utcToday, type Hit } from './policy.js';
 
 export interface ClaimDeps { prisma: PrismaClient; clock: Clock; receipts: ReceiptStore; beforeAppend?: () => void | Promise<void> /* test hook: fail the history insert */ }
@@ -309,16 +309,21 @@ export const withdrawClaim = (d: ClaimDeps, user: User, id: string, body: Record
   return { claim: await reload(tx, id), ev };
 });
 
-// E-34. 404, then checkActor (403 self_approval / forbidden, 409), then routing; every check precedes the one moveClaim. No body field is read.
-export const approveClaim = (d: ClaimDeps, user: User, id: string) => withWrite(d.prisma, async (tx) => {
+// E-34 / E-35. 404, then checkActor (403 self_approval / forbidden, 409); shared by approve and reject.
+async function loadActor(tx: Tx, user: User, id: string) {
   const c = await tx.claim.findUnique({ where: { id }, select: { id: true, claimantId: true, status: true, approverId: true, lines: { select: { amountCents: true } } } });
   if (!c) throw new HttpError(404, 'not_found');
   const me = user!.id;
-  const firstOf = async () => (await tx.claimEvent.findFirst({ where: { claimId: id, action: 'approve_first' }, orderBy: { seq: 'desc' }, select: { actorId: true } }))?.actorId ?? null;
-  const firstApproverId = c.status === 'approved' ? await firstOf() : null;
+  const firstApproverId = c.status === 'approved' ? ((await tx.claimEvent.findFirst({ where: { claimId: id, action: 'approve_first' }, orderBy: { seq: 'desc' }, select: { actorId: true } }))?.actorId ?? null) : null;
   const readable = c.approverId !== me && c.claimantId !== me && canReadClaim(user!, c, await managerChain(tx, c.claimantId));
   const err = checkActor(c, me, { readable, firstApproverId });
   if (err) throw err;
+  return { c, me, firstApproverId };
+}
+
+// Every check precedes the one moveClaim. No body field is read.
+export const approveClaim = (d: ClaimDeps, user: User, id: string) => withWrite(d.prisma, async (tx) => {
+  const { c, me, firstApproverId } = await loadActor(tx, user, id);
   if (c.status === 'approved' && firstApproverId === me) throw new HttpError(403, 'forbidden');
   const second = c.status === 'submitted' ? await nearestActiveAbove(tx, me) : null;
   const decision = decideApproval(c.status, c.lines.reduce((s, l) => s + l.amountCents, 0), second);
@@ -326,5 +331,17 @@ export const approveClaim = (d: ClaimDeps, user: User, id: string) => withWrite(
   if (decision.action === 'approve_first' && (second === me || second === c.claimantId)) throw new HttpError(403, 'forbidden');
   const now = d.clock();
   const ev = await moveClaim(tx, { claimId: id, action: decision.action, actorId: me, now, set: { updatedAt: now, ...(decision.action === 'approve_first' ? { approverId: decision.approverId } : {}) }, beforeAppend: d.beforeAppend });
+  return { claim: await reload(tx, id), ev };
+});
+
+// E-35. Only `reason` is read; state (409) precedes the reason checks (422). approverId is left alone: resubmit overwrites it.
+export const rejectClaim = (d: ClaimDeps, user: User, id: string, body: Record<string, unknown>) => withWrite(d.prisma, async (tx) => {
+  const { c, me } = await loadActor(tx, user, id);
+  const action = rejectAction(c.status);
+  if (!action) throw new HttpError(409, 'invalid_transition');
+  const reason = typeof body.reason === 'string' ? body.reason.trim() : null;
+  if (reason && reason.length > 500) throw bad('reason must be at most 500 characters');
+  const now = d.clock();
+  const ev = await moveClaim(tx, { claimId: id, action, actorId: me, reason, now, set: { updatedAt: now }, beforeAppend: d.beforeAppend });
   return { claim: await reload(tx, id), ev };
 });
