@@ -4,6 +4,7 @@ import { requireClaimant, requireEditable, requireReadable } from './access.js';
 import type { ReceiptStore } from './receipt-storage.js';
 import { withWrite, type Clock, type Tx } from '../db.js';
 import { moveClaim } from './status.js';
+import { checkSubmit, SubmitRefused, utcToday } from './policy.js';
 
 export interface ClaimDeps { prisma: PrismaClient; clock: Clock; receipts: ReceiptStore; beforeAppend?: () => void | Promise<void> /* test hook: fail the history insert */ }
 
@@ -232,8 +233,11 @@ export const submitClaim = (d: ClaimDeps, user: User, id: string) => withWrite(d
   const mgr = c.claimant.manager;
   if (!mgr) throw new HttpError(409, 'no_manager', 'A user with no manager cannot submit claims');
   if (!mgr.active) throw new HttpError(409, 'manager_inactive');
-  if (await tx.claimLine.count({ where: { claimId: id } }) < 1) throw new HttpError(422, 'no_lines');
   const now = d.clock();
+  const full = await tx.claim.findUniqueOrThrow({ where: { id }, select: { title: true, purpose: true, lines: { select: { id: true, position: true, date: true, categoryCode: true, amountCents: true, justification: true, _count: { select: { receipts: true } } } } } });
+  const cats = await tx.category.findMany({ select: { code: true, limitCents: true } });
+  const failures = checkSubmit({ ...full, lines: full.lines.map(({ _count, ...l }) => ({ ...l, receiptCount: _count.receipts })) }, new Map(cats.map((x) => [x.code, x.limitCents])), utcToday(now));
+  if (failures.length) throw new SubmitRefused(failures, c.status); // before the first write
   const ev = await moveClaim(tx, { claimId: id, action: c.status === 'draft' ? 'submit' : 'resubmit', actorId: user!.id, now, set: { approverId: mgr.id, submittedAt: now, updatedAt: now }, beforeAppend: d.beforeAppend });
   await tx.$executeRaw`UPDATE "ClaimLine" SET "limitCents" = (SELECT "limitCents" FROM "Category" WHERE "code" = "ClaimLine"."categoryCode") WHERE "claimId" = ${id}`;
   return { claim: await reload(tx, id), ev };

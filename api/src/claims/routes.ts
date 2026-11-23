@@ -3,6 +3,7 @@ import { pipeline } from 'node:stream/promises';
 import { Router, type Request, type Response } from 'express';
 import { mount, type RouteDef } from '../auth/authz.js';
 import { HttpError } from '../middleware.js';
+import { SubmitRefused } from './policy.js';
 import { sniff } from './receipt-storage.js';
 import { addLine, addReceiptRow, precheckReceipt, createClaim, deleteClaim, deleteLine, deleteReceipt, receiptForRead, editClaim, editLine, getClaim, listCategories, listMine, submitClaim, withdrawClaim, type ClaimDeps } from './service.js';
 
@@ -54,7 +55,12 @@ export const claimRouteDefs = (d: ClaimDeps): RouteDef[] => [
   } },
   // E-31 / E-32: claimant-only; status is never read from the body
   { method: 'post', path: '/claims/:id/submit', data: 'claim', write: true, handler: async (req, res) => {
-    const { claim, ev } = await submitClaim(d, req.user, req.params.id as string);
+    let r: Awaited<ReturnType<typeof submitClaim>>;
+    try { r = await submitClaim(d, req.user, req.params.id as string); } catch (e) {
+      if (e instanceof SubmitRefused) res.locals.logFields = { claimEvent: 'submit_refused', claimId: req.params.id, from: e.from, to: 'submitted', failureCodes: e.failures.map((f) => f.code), failureCount: e.failures.length };
+      throw e;
+    }
+    const { claim, ev } = r;
     res.locals.logFields = { claimEvent: ev.action, claimId: claim.id, from: ev.from, to: ev.to };
     res.json(claim);
   } },
