@@ -155,9 +155,11 @@ export const editLine = (d: ClaimDeps, user: User, id: string, lineId: string, b
 export const deleteLine = (d: ClaimDeps, user: User, id: string, lineId: string) => withWrite(d.prisma, async (tx) => {
   await loadOwn(tx, user, id);
   await ownLine(tx, id, lineId);
+  const keys = (await tx.receipt.findMany({ where: { lineId }, select: { storageKey: true } })).map((r) => r.storageKey);
   await tx.receipt.deleteMany({ where: { lineId } });
   await tx.claimLine.delete({ where: { id: lineId } });
   await touch(tx, d, id);
+  return keys; // files are removed by the caller after commit
 });
 
 // Draft with no history only. Receipt rows go too (receipt files are CLAIM-3-S5).
@@ -166,10 +168,32 @@ export const deleteClaim = (d: ClaimDeps, user: User, id: string) => withWrite(d
   if (c.status === 'paid') throw new HttpError(409, 'claim_paid');
   if (c.status !== 'draft') throw new HttpError(409, 'claim_not_editable');
   if (await tx.claimEvent.count({ where: { claimId: id } }) > 0) throw new HttpError(409, 'has_history');
+  const keys = (await tx.receipt.findMany({ where: { claimId: id }, select: { storageKey: true } })).map((r) => r.storageKey);
   await tx.receipt.deleteMany({ where: { claimId: id } });
   await tx.claimLine.deleteMany({ where: { claimId: id } });
   await tx.claim.delete({ where: { id } });
+  return keys;
 });
+
+// E-30: row goes in the transaction; the caller removes the file after commit.
+export const deleteReceipt = (d: ClaimDeps, user: User, id: string, receiptId: string) => withWrite(d.prisma, async (tx) => {
+  await loadOwn(tx, user, id);
+  const r = await tx.receipt.findFirst({ where: { id: receiptId, claimId: id }, select: { storageKey: true } });
+  if (!r) throw new HttpError(404, 'not_found');
+  await tx.receipt.delete({ where: { id: receiptId } });
+  await touch(tx, d, id);
+  return [r.storageKey];
+});
+
+// E-29: 404 claim, 403 not readable (current hierarchy), 404 receipt not of this claim.
+export async function receiptForRead(d: ClaimDeps, user: User, id: string, receiptId: string) {
+  const c = await d.prisma.claim.findUnique({ where: { id }, select: { id: true, claimantId: true, status: true } });
+  if (!c) throw new HttpError(404, 'not_found');
+  await requireReadable(d.prisma, user, c);
+  const r = await d.prisma.receipt.findFirst({ where: { id: receiptId, claimId: id }, select: { storageKey: true, mime: true } });
+  if (!r) throw new HttpError(404, 'not_found');
+  return r;
+}
 
 // Unlocked pre-check for uploads (404 claim, 403 non-claimant, 409 status, 404 line), before any body is read.
 export const precheckReceipt = (d: ClaimDeps, user: User, id: string, lineId: string): Promise<void> => (async () => {

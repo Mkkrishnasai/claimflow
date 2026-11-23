@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { chmodSync, mkdirSync } from 'node:fs';
-import { open, rename, rm } from 'node:fs/promises';
+import { open, rename, rm, type FileHandle } from 'node:fs/promises';
 import { join } from 'node:path';
 
 // C-25. Receipt bytes on local disk under a server-generated <uuid> name; filenames never reach a path.
@@ -11,6 +11,7 @@ export interface ReceiptStore {
   ensureDir(): void;
   put(bytes: Buffer): Promise<string>;
   remove(key: string): Promise<void>;
+  open(key: string): Promise<{ size: number; handle: FileHandle }>;
 }
 
 const SIGS: [ReceiptMime, number[]][] = [
@@ -40,6 +41,11 @@ export function receiptStorage(dir: string): ReceiptStore {
         throw new Error('receipt_write_failed'); // no path or name in the message
       }
       return key;
+    },
+    async open(key) {
+      if (!UUID_RE.test(key)) throw new Error('receipt_missing');
+      const handle = await open(join(dir, key), 'r');
+      try { return { size: (await handle.stat()).size, handle }; } catch (e) { await handle.close(); throw e; }
     },
     async remove(key) {
       if (!UUID_RE.test(key)) return;

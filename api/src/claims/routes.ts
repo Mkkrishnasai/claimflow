@@ -1,9 +1,10 @@
 import { createHash } from 'node:crypto';
-import { Router, type Request } from 'express';
+import { pipeline } from 'node:stream/promises';
+import { Router, type Request, type Response } from 'express';
 import { mount, type RouteDef } from '../auth/authz.js';
 import { HttpError } from '../middleware.js';
 import { sniff } from './receipt-storage.js';
-import { addLine, addReceiptRow, precheckReceipt, createClaim, deleteClaim, deleteLine, editClaim, editLine, getClaim, listCategories, listMine, type ClaimDeps } from './service.js';
+import { addLine, addReceiptRow, precheckReceipt, createClaim, deleteClaim, deleteLine, deleteReceipt, receiptForRead, editClaim, editLine, getClaim, listCategories, listMine, type ClaimDeps } from './service.js';
 
 export const claimRouteDefs = (d: ClaimDeps): RouteDef[] => [
   // E-19
@@ -31,7 +32,7 @@ export const claimRouteDefs = (d: ClaimDeps): RouteDef[] => [
     res.json(await editClaim(d, req.user, req.params.id as string, req.body ?? {}));
   } },
   { method: 'delete', path: '/claims/:id', data: 'claim', write: true, handler: async (req, res) => {
-    await deleteClaim(d, req.user, req.params.id as string);
+    await dropFiles(d, res, await deleteClaim(d, req.user, req.params.id as string));
     res.status(204).end();
   } },
   { method: 'post', path: '/claims/:id/lines', data: 'claim', write: true, handler: async (req, res) => {
@@ -41,10 +42,29 @@ export const claimRouteDefs = (d: ClaimDeps): RouteDef[] => [
     res.json(await editLine(d, req.user, req.params.id as string, req.params.lineId as string, req.body ?? {}));
   } },
   { method: 'delete', path: '/claims/:id/lines/:lineId', data: 'claim', write: true, handler: async (req, res) => {
-    await deleteLine(d, req.user, req.params.id as string, req.params.lineId as string);
+    await dropFiles(d, res, await deleteLine(d, req.user, req.params.id as string, req.params.lineId as string));
+    res.status(204).end();
+  } },
+  // E-29: streamed only after canReadClaim; the file is opened before any header is written
+  { method: 'get', path: '/claims/:id/receipts/:receiptId', data: 'claim', write: false, handler: async (req, res) => {
+    const r = await receiptForRead(d, req.user, req.params.id as string, req.params.receiptId as string);
+    const { size, handle } = await d.receipts.open(r.storageKey);
+    res.set({ 'Content-Type': r.mime, 'Content-Length': String(size), 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'private, no-store', 'Content-Disposition': 'inline' });
+    await pipeline(handle.createReadStream(), res);
+  } },
+  // E-30
+  { method: 'delete', path: '/claims/:id/receipts/:receiptId', data: 'claim', write: true, handler: async (req, res) => {
+    await dropFiles(d, res, await deleteReceipt(d, req.user, req.params.id as string, req.params.receiptId as string));
     res.status(204).end();
   } },
 ];
+
+// After commit: a failed removal leaves an orphan file, never a failed request; only a count is logged.
+async function dropFiles(d: ClaimDeps, res: Response, keys: string[]) {
+  const results = await Promise.allSettled(keys.map((k) => d.receipts.remove(k)));
+  const orphans = results.filter((x) => x.status === 'rejected').length;
+  if (orphans) res.locals.logFields = { ...res.locals.logFields, orphanFiles: orphans };
+}
 
 export const claimRoutes = (d: ClaimDeps): Router => mount(Router(), claimRouteDefs(d));
 
