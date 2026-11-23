@@ -6,6 +6,7 @@ import { verifyPassword } from './auth/secrets.js';
 import { authenticate } from './auth/session.js';
 import { createLogger, type Logger } from './logger.js';
 import { errorHandler, notFound, requestLog } from './middleware.js';
+import { claimRoutes } from './claims/routes.js';
 import { userRoutes } from './users/routes.js';
 import type { ClaimStore } from './claims-port.js';
 import type { Mailer } from './mailer.js';
@@ -27,7 +28,9 @@ export function createApp(opts: AppOptions = {}): Express {
     const { prisma, clock } = opts.deps;
     const log = opts.log ?? createLogger();
     const api = Router();
-    api.use(authenticate(prisma, clock), express.json({ limit: '10kb' }), authRoutes(prisma, clock, opts.deps.verify, { mailer: opts.deps.mailer, publicBaseUrl: opts.deps.publicBaseUrl, log }), userRoutes(opts.deps));
+    api.use(authenticate(prisma, clock));
+    api.use('/claims', express.json({ limit: '100kb' })); // ADR-32: parsed first, so the 10 kb parser below skips it
+    api.use(express.json({ limit: '10kb' }), authRoutes(prisma, clock, opts.deps.verify, { mailer: opts.deps.mailer, publicBaseUrl: opts.deps.publicBaseUrl, log }), userRoutes(opts.deps), claimRoutes({ prisma, clock }));
     app.use('/api', api);
   }
   if (opts.testRoutes) {

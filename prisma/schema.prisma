@@ -26,6 +26,10 @@ model User {
   reports      User[]         @relation("Hierarchy")
   tokens       OneTimeToken[]
   sessions     Session[]
+  claims       Claim[]        @relation("Claimant")
+  approvals    Claim[]        @relation("Approver")
+  events       ClaimEvent[]
+  uploads      Receipt[]
 
   @@index([managerId])
 }
@@ -65,4 +69,105 @@ model LoginAttempt {
   lockedUntil DateTime?
 
   @@id([kind, email])
+}
+
+enum ClaimStatus {
+  draft
+  submitted
+  approved
+  rejected
+  ready_to_pay
+  paid
+}
+
+enum EventAction {
+  submit
+  resubmit
+  withdrawn
+  approve_first
+  approve_final
+  reject
+  approve_second
+  reject_second
+  send_back
+  pay
+  reassigned
+}
+
+model Category {
+  code       String      @id
+  label      String
+  limitCents Int
+  lines      ClaimLine[]
+}
+
+model Claim {
+  id          String       @id @default(uuid())
+  claimantId  String
+  claimant    User         @relation("Claimant", fields: [claimantId], references: [id], onDelete: Restrict)
+  title       String
+  purpose     String
+  status      ClaimStatus  @default(draft)
+  approverId  String?
+  approver    User?        @relation("Approver", fields: [approverId], references: [id], onDelete: Restrict)
+  createdAt   DateTime
+  updatedAt   DateTime
+  submittedAt DateTime?
+  lines       ClaimLine[]
+  events      ClaimEvent[]
+  receipts    Receipt[]
+
+  @@index([claimantId, updatedAt])
+  @@index([approverId, status])
+}
+
+model ClaimLine {
+  id           String    @id @default(uuid())
+  claimId      String
+  claim        Claim     @relation(fields: [claimId], references: [id], onDelete: Restrict)
+  position     Int
+  date         String
+  categoryCode String
+  category     Category  @relation(fields: [categoryCode], references: [code], onDelete: Restrict)
+  amountCents  Int
+  description  String
+  limitCents   Int?
+  receipts     Receipt[]
+
+  @@unique([claimId, position])
+  @@unique([id, claimId])
+}
+
+model Receipt {
+  id           String    @id @default(uuid())
+  lineId       String
+  claimId      String
+  line         ClaimLine @relation(fields: [lineId, claimId], references: [id, claimId], onDelete: Restrict)
+  claim        Claim     @relation(fields: [claimId], references: [id], onDelete: Restrict)
+  storageKey   String    @unique
+  sha256       String
+  sizeBytes    Int
+  mime         String
+  originalName String?
+  uploadedById String
+  uploadedBy   User      @relation(fields: [uploadedById], references: [id], onDelete: Restrict)
+  uploadedAt   DateTime
+
+  @@index([sha256])
+}
+
+model ClaimEvent {
+  id         String      @id @default(uuid())
+  claimId    String
+  claim      Claim       @relation(fields: [claimId], references: [id], onDelete: Restrict)
+  seq        Int
+  actorId    String
+  actor      User        @relation(fields: [actorId], references: [id], onDelete: Restrict)
+  action     EventAction
+  fromStatus ClaimStatus
+  toStatus   ClaimStatus
+  reason     String?
+  at         DateTime
+
+  @@unique([claimId, seq])
 }
