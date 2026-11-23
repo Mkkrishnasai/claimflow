@@ -2,6 +2,7 @@ import { Prisma, type PrismaClient, type Role } from '@prisma/client';
 import { HttpError } from '../middleware.js';
 import { withWrite, type Clock } from '../db.js';
 import { randomToken, sha256 } from '../auth/secrets.js';
+import { isManagerRole } from '../auth/authz.js';
 import type { Mailer } from '../mailer.js';
 
 const ROLES: readonly string[] = ['employee', 'manager', 'finance', 'admin'];
@@ -28,7 +29,7 @@ export async function setManager(d: UserDeps, id: string, body: Record<string, u
         if (cur === id) throw new HttpError(409, 'hierarchy_violation', 'manager assignment would create a loop');
         cur = (await tx.user.findUnique({ where: { id: cur }, select: { managerId: true } }))?.managerId ?? null;
       }
-      if (m.role !== 'manager') throw new HttpError(409, 'hierarchy_violation', 'manager must have role manager'); // Q-13
+      if (!isManagerRole(m.role)) throw new HttpError(409, 'hierarchy_violation', 'manager must have role manager'); // Q-13
     }
     return tx.user.update({ where: { id }, data: { managerId } });
   });
@@ -50,7 +51,7 @@ export async function createUser(d: UserDeps, body: Record<string, unknown>) {
         const m = await tx.user.findUnique({ where: { id: managerId } });
         if (!m) throw new HttpError(409, 'hierarchy_violation', 'manager does not exist');
         if (!m.active) throw new HttpError(409, 'hierarchy_violation', 'manager is inactive');
-        if (m.role !== 'manager') throw new HttpError(409, 'hierarchy_violation', 'manager must have role manager'); // Q-13
+        if (!isManagerRole(m.role)) throw new HttpError(409, 'hierarchy_violation', 'manager must have role manager'); // Q-13
       }
       const u = await tx.user.create({ data: { name: name.trim(), email: email.trim().toLowerCase(), role: role as Role, managerId: managerId ?? null, passwordHash: null } });
       await tx.oneTimeToken.create({ data: { hash: sha256(raw), userId: u.id, purpose: 'set_password', expiresAt: new Date(d.clock().getTime() + TOKEN_TTL_MS) } });
@@ -66,4 +67,22 @@ export async function createUser(d: UserDeps, body: Record<string, unknown>) {
     throw new HttpError(502, 'smtp_unavailable');
   }
   return publicUser(user);
+}
+
+const LIST_SELECT = { id: true, name: true, email: true, role: true, managerId: true, active: true, manager: { select: { name: true, active: true } } } as const;
+type Row = { id: string; name: string; email: string; role: Role; managerId: string | null; active: boolean; manager: { name: string; active: boolean } | null };
+const listItem = (u: Row) => ({ ...publicUser(u), managerName: u.manager?.name ?? null, managerInactive: u.manager ? !u.manager.active : false });
+
+// E-10
+export async function listUsers(d: UserDeps) {
+  return (await d.prisma.user.findMany({ select: LIST_SELECT, orderBy: { name: 'asc' } })).map(listItem);
+}
+
+// E-11. Caller has already passed canReadUser; 404 only for an admin asking for an unknown id.
+export async function getUser(d: UserDeps, id: string) {
+  const u = await d.prisma.user.findUnique({ where: { id }, select: { ...LIST_SELECT, passwordHash: true, reports: { select: { id: true, name: true }, orderBy: { name: 'asc' } } } });
+  if (!u) throw new HttpError(404, 'not_found');
+  const a = await d.prisma.loginAttempt.findUnique({ where: { kind_email: { kind: 'sign_in', email: u.email } } });
+  const lockedUntil = a?.lockedUntil && a.lockedUntil > d.clock() ? a.lockedUntil.toISOString() : null;
+  return { ...listItem(u), reports: u.reports, lockedUntil, passwordSet: u.passwordHash !== null };
 }
