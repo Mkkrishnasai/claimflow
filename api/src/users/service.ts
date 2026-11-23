@@ -4,6 +4,7 @@ import { withWrite, type Clock } from '../db.js';
 import { randomToken, sha256 } from '../auth/secrets.js';
 import { isManagerRole } from '../auth/authz.js';
 import type { Mailer } from '../mailer.js';
+import { NoClaimStore, type ClaimStore } from '../claims-port.js';
 
 const ROLES: readonly string[] = ['employee', 'manager', 'finance', 'admin'];
 const bad = (reason: string) => new HttpError(400, 'invalid_input', reason);
@@ -12,7 +13,7 @@ export const TOKEN_TTL_MS = 24 * 3_600_000;
 export const publicUser = (u: { id: string; name: string; email: string; role: Role; managerId: string | null; active: boolean }) =>
   ({ id: u.id, name: u.name, email: u.email, role: u.role, managerId: u.managerId, active: u.active });
 
-export interface UserDeps { prisma: PrismaClient; clock: Clock; mailer: Mailer; publicBaseUrl: string }
+export interface UserDeps { prisma: PrismaClient; clock: Clock; mailer: Mailer; publicBaseUrl: string; claims?: ClaimStore }
 
 // E-13. Loop walk and write share one withWrite transaction; walk bounded by user count.
 export async function setManager(d: UserDeps, id: string, body: Record<string, unknown>) {
@@ -86,6 +87,47 @@ export async function resendLink(d: UserDeps, id: string) {
   } catch {
     throw new HttpError(502, 'smtp_unavailable');
   }
+}
+
+const MAIL_DEADLINE_MS = 15_000;
+
+// E-15. One transaction: update, sessions, then reassign last (ADR-18). Mail after commit under one 15 s deadline; failures never roll back (Q-9).
+export async function deactivateUser(d: UserDeps, id: string) {
+  const claims = d.claims ?? NoClaimStore;
+  const { moved, mails } = await withWrite(d.prisma, async (tx) => {
+    const u = await tx.user.findUnique({ where: { id } });
+    if (!u) throw new HttpError(404, 'not_found');
+    if (!u.active) throw new HttpError(409, 'already_inactive');
+    const admins = await tx.user.findMany({ where: { role: 'admin', active: true }, select: { id: true } });
+    if (admins.length === 1 && admins[0].id === id)
+      throw new HttpError(409, 'last_admin', 'the last active admin cannot be deactivated');
+    const waiting = await claims.listWaitingOn(tx, id);
+    let target: string | null = null;
+    if (waiting.length) {
+      let cur = u.managerId;
+      for (let n = await tx.user.count(); cur && n >= 0; n--) {
+        const a = await tx.user.findUnique({ where: { id: cur } });
+        if (!a) break;
+        if (a.active) { target = a.id; break; }
+        cur = a.managerId;
+      }
+      if (!target) throw new HttpError(409, 'would_strand_claims', 'claims are waiting on this user and no active manager exists above them');
+    }
+    await tx.user.update({ where: { id }, data: { active: false } });
+    await tx.session.deleteMany({ where: { userId: id } });
+    const mails: { to: string | null; claimId: string }[] = [];
+    if (target) {
+      for (const c of waiting) mails.push({ to: (await tx.user.findUnique({ where: { id: c.claimantId }, select: { email: true } }))?.email ?? null, claimId: c.id });
+      await claims.reassign(tx, waiting.map((c) => c.id), target);
+    }
+    return { moved: waiting.length, mails };
+  });
+  let notified = 0;
+  let timer: NodeJS.Timeout | undefined;
+  const sends = mails.map((m) => m.to ? d.mailer.reassignedMail(m.to, m.claimId).then(() => { notified++; }, () => undefined) : Promise.resolve());
+  await Promise.race([Promise.allSettled(sends), new Promise((r) => { timer = setTimeout(r, MAIL_DEADLINE_MS); })]);
+  clearTimeout(timer);
+  return { id, active: false, reassignedClaims: moved, notified };
 }
 
 const LIST_SELECT = { id: true, name: true, email: true, role: true, managerId: true, active: true, manager: { select: { name: true, active: true } } } as const;

@@ -7,13 +7,14 @@ import { authenticate } from './auth/session.js';
 import { createLogger, type Logger } from './logger.js';
 import { errorHandler, notFound, requestLog } from './middleware.js';
 import { userRoutes } from './users/routes.js';
+import type { ClaimStore } from './claims-port.js';
 import type { Mailer } from './mailer.js';
 import { claimTestRoutes, testRouter } from './test-routes.js';
 
 export interface AppOptions {
   testRoutes?: boolean;
   log?: Logger;
-  deps?: { prisma: PrismaClient; clock: Clock; mailer: Mailer; publicBaseUrl: string; verify?: typeof verifyPassword };
+  deps?: { prisma: PrismaClient; clock: Clock; mailer: Mailer; publicBaseUrl: string; verify?: typeof verifyPassword; claims?: ClaimStore };
 }
 
 export function createApp(opts: AppOptions = {}): Express {
