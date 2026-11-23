@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { canReadUser, mount, requireAdmin, type RouteDef } from '../auth/authz.js';
 import { HttpError } from '../middleware.js';
-import { createUser, getUser, listUsers, setManager, type UserDeps } from './service.js';
+import { createUser, getUser, listUsers, resendLink, setManager, type UserDeps } from './service.js';
 
 export const userRouteDefs = (d: UserDeps): RouteDef[] => [
   // E-10
@@ -24,6 +24,12 @@ export const userRouteDefs = (d: UserDeps): RouteDef[] => [
   { method: 'patch', path: '/users/:id/manager', data: 'user', write: true, handler: async (req, res) => {
     requireAdmin(req.user);
     res.json(await setManager(d, req.params.id as string, req.body ?? {}));
+  } },
+  // E-14
+  { method: 'post', path: '/users/:id/resend-link', data: 'user', write: true, handler: async (req, res) => {
+    requireAdmin(req.user);
+    await resendLink(d, req.params.id as string);
+    res.status(204).end();
   } },
 ];
 

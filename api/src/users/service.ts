@@ -69,6 +69,25 @@ export async function createUser(d: UserDeps, body: Record<string, unknown>) {
   return publicUser(user);
 }
 
+// E-14. Swap unused set_password tokens for a fresh one in one transaction; mail after commit.
+export async function resendLink(d: UserDeps, id: string) {
+  const raw = randomToken();
+  const email = await withWrite(d.prisma, async (tx) => {
+    const u = await tx.user.findUnique({ where: { id } });
+    if (!u) throw new HttpError(404, 'not_found');
+    if (!u.active) throw new HttpError(409, 'user_inactive');
+    if (u.passwordHash !== null) throw new HttpError(409, 'password_already_set');
+    await tx.oneTimeToken.deleteMany({ where: { userId: id, purpose: 'set_password', usedAt: null } });
+    await tx.oneTimeToken.create({ data: { hash: sha256(raw), userId: id, purpose: 'set_password', expiresAt: new Date(d.clock().getTime() + TOKEN_TTL_MS) } });
+    return u.email;
+  });
+  try {
+    await d.mailer.linkMail('set_password', email, `${d.publicBaseUrl}/set-password#token=${raw}`);
+  } catch {
+    throw new HttpError(502, 'smtp_unavailable');
+  }
+}
+
 const LIST_SELECT = { id: true, name: true, email: true, role: true, managerId: true, active: true, manager: { select: { name: true, active: true } } } as const;
 type Row = { id: string; name: string; email: string; role: Role; managerId: string | null; active: boolean; manager: { name: string; active: boolean } | null };
 const listItem = (u: Row) => ({ ...publicUser(u), managerName: u.manager?.name ?? null, managerInactive: u.manager ? !u.manager.active : false });
