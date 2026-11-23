@@ -18,3 +18,13 @@ dl { margin: 0; overflow-wrap: anywhere; }
 dt { font-weight: 600; margin-top: .5rem; }
 dd { margin: 0; }
 .flag { color: #a30000; }
+nav a { display: inline-block; padding: .6rem .5rem; min-height: 44px; }
+nav button { margin-top: 0; min-height: 44px; }
+a.button, label.button, button.button { display: inline-block; margin-top: 1rem; padding: .6rem 1rem; min-height: 44px; min-width: 44px; font-weight: 400; color: #fff; background: #0b4f9c; border-radius: 4px; text-decoration: none; cursor: pointer; }
+label.button input { position: absolute; width: 1px; height: 1px; opacity: 0; overflow: hidden; }
+label.button:focus-within { outline: 3px solid #b35900; outline-offset: 2px; }
+label.button + label.button { margin-left: .5rem; }
+button, button.button { min-height: 44px; min-width: 44px; }
+fieldset { margin: 1rem 0 0; padding: .5rem 1rem 1rem; border: 1px solid #595959; border-radius: 4px; min-width: 0; }
+textarea { display: block; width: 100%; padding: .6rem; font: inherit; border: 1px solid #595959; border-radius: 4px; }
+ul.plain { list-style: none; padding: 0; }
