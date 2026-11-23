@@ -7,6 +7,8 @@ import { PrismaClient } from '@prisma/client';
 import { createApp } from '../../api/src/app.js';
 import { createLogger } from '../../api/src/logger.js';
 import { submitClaim } from '../../api/src/claims/service.js';
+import { withWrite } from '../../api/src/db.js';
+import { moveClaim } from '../../api/src/claims/status.js';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -206,4 +208,59 @@ test('S3 AC-5 the link carries only an id and the other claim stays 403', async 
   assert.deepEqual(Object.keys(r.j.lines[0].duplicate).sort(), ['basis', 'claimId']);
   const s = await signIn('emp');
   assert.equal((await fetch(`${base}/api/claims/${a}`, { headers: { cookie: s.cookie } })).status, 403);
+});
+
+// ---- CLAIM-4-S4: withdraw and resubmit ----
+const mv = (claimId: string, action: Parameters<typeof moveClaim>[1]['action'], reason?: string) => withWrite(prisma, (tx) => moveClaim(tx, { claimId, action, actorId: 'mgr', reason, now: new Date(0) }));
+const hist = async (id: string) => (await prisma.claimEvent.findMany({ where: { claimId: id }, orderBy: { seq: 'asc' } })).map((e) => e.action);
+
+test('AC-9 withdraw: draft, flags and approver cleared, snapshot kept, claimant-only, refused after manager acts, race gives one winner', async () => {
+  const other = await mkc([{ ...T }], { status: 'submitted', submittedAt: new Date(1) });
+  const id = await withReceipts(await mkc([{ ...T }]));
+  const s = await signIn('emp');
+  assert.deepEqual((await sub(id)).j.lines[0].duplicate, { claimId: other, basis: 'match' });
+  out.length = 0;
+  assert.equal((await act(await signIn('fin'), id, 'withdraw')).status, 403);
+  const r = await act(s, id, 'withdraw');
+  assert.equal(r.status, 200);
+  const j = (await r.json()) as J;
+  assert.equal(j.status, 'draft'); assert.equal(j.approverId, null); assert.equal(j.submittedAt, null);
+  assert.deepEqual(j.lines.map((l: J) => l.duplicate), [null]); assert.equal(j.lines[0].limitCents, 5000);
+  assert.deepEqual(await hist(id), ['submit', 'withdrawn']);
+  assert.match(out.find((l) => l.includes(id) && l.includes('claimEvent'))!, /"claimEvent":"withdrawn"/);
+  assert.equal(((await (await fetch(`${base}/api/claims/${id}`, { headers: { cookie: s.cookie } })).json()) as J).lines[0].limitCents, 5000);
+
+  for (const [st, err] of [['approved', 'invalid_transition'], ['rejected', 'invalid_transition'], ['ready_to_pay', 'invalid_transition'], ['paid', 'claim_paid']]) {
+    const o = await mk(st);
+    const x = await act(s, o.id, 'withdraw');
+    assert.equal(x.status, 409); assert.equal(((await x.json()) as J).error, err);
+    assert.equal((await events(o.id)).length, 0);
+  }
+
+  const race = await mkc([{}], { status: 'submitted', approverId: 'mgr', submittedAt: new Date(1) });
+  const [a, w] = await Promise.allSettled([mv(race, 'approve_first'), act(s, race, 'withdraw').then((x) => { if (x.status !== 200) throw new Error(String(x.status)); })]);
+  assert.equal([a, w].filter((x) => x.status === 'fulfilled').length, 1);
+  assert.equal((await events(race)).length, 1);
+});
+
+test('AC-10 resubmit after reject and after finance send-back: 422 stays rejected, fixed gives submit/reject/resubmit, approver is current manager', async () => {
+  const id = await mkc([{}]);
+  assert.equal((await sub(id)).status, 200);
+  await mv(id, 'reject', 'long enough reason');
+  await prisma.claimLine.updateMany({ where: { claimId: id }, data: { date: '2026-01-02' } });
+  const bad = await sub(id);
+  assert.equal(bad.status, 422); assert.equal(bad.j.error, 'validation_failed');
+  assert.equal((await prisma.claim.findUniqueOrThrow({ where: { id } })).status, 'rejected');
+  await prisma.claimLine.updateMany({ where: { claimId: id }, data: { date: '2025-12-25' } });
+  const ok = await sub(id);
+  assert.equal(ok.status, 200); assert.equal(ok.j.status, 'submitted');
+  assert.deepEqual(await hist(id), ['submit', 'reject', 'resubmit']);
+
+  await prisma.user.create({ data: { id: 'mgr2', email: 'mgr2@claimflow.test', name: 'mgr2', role: 'manager', passwordHash: 'x' } });
+  await prisma.user.update({ where: { id: 'emp' }, data: { managerId: 'mgr2' } });
+  const sb = await mkc([{}], { status: 'ready_to_pay', approverId: 'mgr' });
+  await mv(sb, 'send_back', 'long enough reason');
+  const r = await sub(sb);
+  assert.equal(r.status, 200); assert.equal(r.j.approverId, 'mgr2');
+  assert.deepEqual(await hist(sb), ['send_back', 'resubmit']);
 });
