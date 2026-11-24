@@ -3,7 +3,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { chromium, type Browser, type Page } from '@playwright/test';
+import { chromium, type Browser, type Locator, type Page } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 
 export const WEB = 'http://127.0.0.1:5173';
@@ -17,9 +17,10 @@ let browser: Browser;
 export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export async function startStack() {
+  await fetch(`${mailpit}/api/v1/messages`, { method: 'DELETE' }).catch(() => {}); // no stale mail from earlier runs
   proc = spawn('npm', ['start', '--silent'], {
     detached: true, stdio: 'ignore',
-    env: { ...process.env, DATABASE_URL: `file:${join(dir, 't.db')}`, SEED_PASSWORD: PW, DOTENV_CONFIG_PATH: join(dir, 'none'), NODE_ENV: 'development' },
+    env: { ...process.env, DATABASE_URL: `file:${join(dir, 't.db')}`, RECEIPTS_DIR: join(dir, 'receipts'), SEED_PASSWORD: PW, DOTENV_CONFIG_PATH: join(dir, 'none'), NODE_ENV: 'development' },
   });
   for (let i = 0; ; i++) {
     try { if ((await fetch(`${WEB}/api/auth/csrf`)).ok && (await fetch(`${mailpit}/`)).ok) break; } catch {}
@@ -62,11 +63,12 @@ export async function clean(page: Page, label: string) {
   assert.deepEqual(violations.map((v) => v.id), [], label);
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), `${label}: horizontal scroll`);
 }
-// Tab until `selector` has focus (keyboard reachability); fails after `max` presses.
-export async function tabTo(page: Page, selector: string, max = 50) {
+// Tab until the target (CSS selector or Locator) has focus (keyboard reachability); fails with `label` after `max` presses.
+export async function tabTo(page: Page, target: string | Locator, max = 50, label = String(target)) {
+  const loc = typeof target === 'string' ? page.locator(target).first() : target;
   for (let i = 0; i < max; i++) {
-    if (await page.evaluate((s) => document.activeElement?.matches(s) ?? false, selector)) return;
+    if (await loc.evaluate((el) => el === document.activeElement).catch(() => false)) return;
     await page.keyboard.press('Tab');
   }
-  assert.fail(`${selector} not reachable by Tab`);
+  assert.fail(`${label}: target not reachable by Tab`);
 }
