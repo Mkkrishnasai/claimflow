@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { api, type SessionUser } from '../api';
-import { Alert, Button, Card, PageHeader, TextField, fieldErrors } from '../ui/components';
+import { Alert, AuthAside, Button, Card, PageHeader, TextField, fieldErrors } from '../ui/components';
 
 export default function SignIn({ onSignedIn }: { onSignedIn: (u: SessionUser) => void }) {
   const [email, setEmail] = useState(() => new URLSearchParams(location.search).get('email') ?? '');
@@ -26,10 +26,10 @@ export default function SignIn({ onSignedIn }: { onSignedIn: (u: SessionUser) =>
 
   return (
     <main className="auth">
-      <aside className="auth__aside" aria-hidden="true"><p>ClaimFlow</p></aside>
+      <AuthAside />
       <div className="auth__panel">
         <Card>
-          <PageHeader title="Sign in" focusable={false} />
+          <PageHeader title="Sign in" subtitle="Use the email your admin set up for you." focusable={false} />
           <form onSubmit={submit} noValidate>
             <TextField id="email" label="Email" type="email" autoComplete="username" required value={email} error={errs.email} onChange={(e) => setEmail(e.target.value)} />
             <TextField id="password" label="Password" type="password" autoComplete="current-password" required value={password} error={errs.password} onChange={(e) => setPassword(e.target.value)} />

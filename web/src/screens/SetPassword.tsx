@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { api, ApiError } from '../api';
-import { Alert, Button, Card, PageHeader, TextField, fieldErrors } from '../ui/components';
+import { Alert, AuthAside, Button, Card, PageHeader, TextField, fieldErrors } from '../ui/components';
 
 // One screen for set_password and reset links; the token lives in the URL fragment (never sent to the server).
 export default function SetPassword({ go }: { go: (to: string) => void }) {
@@ -31,7 +31,7 @@ export default function SetPassword({ go }: { go: (to: string) => void }) {
 
   return (
     <main className="auth">
-      <aside className="auth__aside" aria-hidden="true"><p>ClaimFlow</p></aside>
+      <AuthAside />
       <div className="auth__panel">
         <Card>
           <PageHeader title="Set your password" />

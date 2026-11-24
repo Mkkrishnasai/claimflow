@@ -34,12 +34,12 @@ export default function UserDetail({ id, viewer }: { id: string; viewer: Session
 
   return (
     <section>
-      <PageHeader title="User detail" />
+      <PageHeader eyebrow="Account" title="User detail" />
       {error && <Alert>{error}</Alert>}
       {note && <Alert role="status" tone="info">{note}</Alert>}
       {u && (
         <>
-          <dl>
+          <dl className="card facts">
             <dt>Name</dt><dd>{u.name}</dd>
             <dt>Email</dt><dd>{u.email}</dd>
             <dt>Role</dt><dd>{u.role}</dd>

@@ -1,6 +1,7 @@
 import { useEffect, useState, type ChangeEvent } from 'react';
 import { api, ApiError } from '../api';
-import { Alert, Button, Card, DateField, Select, TextField } from '../ui/components';
+import { Check, Plus, TriangleAlert, Upload } from 'lucide-react';
+import { Alert, Button, Card, DateField, PageHeader, Select, TextField } from '../ui/components';
 import { formatCents, justificationFor, parseEuro } from '../money';
 
 interface Receipt { id: string; originalName: string | null }
@@ -96,15 +97,23 @@ export default function ClaimEditor({ id, go }: { id: string; go: (to: string) =
 
   const dropLine = (l: Line) => { if (l.id) setRemoved((r) => [...r, l.id!]); setLines((ls) => ls.filter((x) => x.key !== l.key)); };
 
+  const totalCents = lines.reduce((n, l) => n + (parseEuro(l.amount) ?? 0), 0);
+  const overLines = lines.map((l, i) => ({ l, i, limit: cats.find((c) => c.code === l.categoryCode)?.limitCents ?? 0, cents: parseEuro(l.amount) }))
+    .filter((x) => x.cents !== null && x.cents > x.limit);
+
   return (
     <section>
-      <h1 tabIndex={-1}>{id ? 'Edit claim' : 'New claim'}</h1>
+      <PageHeader eyebrow="Claims" title={id ? 'Edit claim' : 'New claim'} subtitle="Add each expense as a line, then save to attach receipts." />
       {error && <Alert>{error}</Alert>}
       {note && <Alert role="status" tone="success">{note}</Alert>}
       {ready && !blocked && (
-        <form onSubmit={save}>
-          <TextField id="title" label="Title" required maxLength={120} value={title} onChange={(e) => setTitle(e.target.value)} />
-          <TextField multiline id="purpose" label="Purpose" required minLength={10} maxLength={2000} rows={3} value={purpose} onChange={(e) => setPurpose(e.target.value)} />
+        <div className="two-col">
+        <form onSubmit={save} className="two-col__main">
+          <Card as="section">
+            <h2>About this claim</h2>
+            <TextField id="title" label="Title" required maxLength={120} value={title} onChange={(e) => setTitle(e.target.value)} />
+            <TextField multiline id="purpose" label="Purpose" required minLength={10} maxLength={2000} rows={3} value={purpose} onChange={(e) => setPurpose(e.target.value)} />
+          </Card>
           {lines.map((l, i) => {
             const limit = cats.find((c) => c.code === l.categoryCode)?.limitCents ?? 0;
             const cents = parseEuro(l.amount);
@@ -112,34 +121,60 @@ export default function ClaimEditor({ id, go }: { id: string; go: (to: string) =
             return (
             <Card as="fieldset" key={l.key} className="line-card">
               <legend>Line {i + 1}</legend>
-              <DateField id={`date-${l.key}`} label="Date" required value={l.date} onChange={(e) => patch(l.key, { date: e.target.value })} />
-              <Select id={`cat-${l.key}`} label="Category" value={l.categoryCode} onChange={(e) => patch(l.key, { categoryCode: e.target.value })}>
-                {cats.map((c) => <option key={c.code} value={c.code}>{`${c.label} (limit ${formatCents(c.limitCents)})`}</option>)}
-              </Select>
-              <TextField id={`amt-${l.key}`} label="Amount (EUR)" inputMode="decimal" required value={l.amount} error={l.amountErr} errorId={`amt-err-${l.key}`} onChange={(e) => patch(l.key, { amount: e.target.value })} />
+              <div className="line-grid">
+                <DateField id={`date-${l.key}`} label="Date" required value={l.date} onChange={(e) => patch(l.key, { date: e.target.value })} />
+                <Select id={`cat-${l.key}`} label="Category" value={l.categoryCode} onChange={(e) => patch(l.key, { categoryCode: e.target.value })}>
+                  {cats.map((c) => <option key={c.code} value={c.code}>{`${c.label} (limit ${formatCents(c.limitCents)})`}</option>)}
+                </Select>
+                <TextField id={`amt-${l.key}`} label="Amount (EUR)" inputMode="decimal" required value={l.amount} error={l.amountErr} errorId={`amt-err-${l.key}`} onChange={(e) => patch(l.key, { amount: e.target.value })} />
+              </div>
               <TextField id={`desc-${l.key}`} label="Description" required maxLength={200} value={l.description} onChange={(e) => patch(l.key, { description: e.target.value })} />
               {(over || l.stored) && (
-                <TextField multiline id={`just-${l.key}`} label={`Justification (at least 20 characters, required above ${formatCents(limit)})`} attention={over} maxLength={500} rows={3} value={l.justification} onChange={(e) => patch(l.key, { justification: e.target.value })} />
+                <div className={over ? 'over-limit' : undefined}>
+                  {over && <p className="over-limit__note"><TriangleAlert aria-hidden="true" size={15} />{`${formatCents(cents! - limit)} over the limit`}</p>}
+                  <TextField multiline id={`just-${l.key}`} label={`Justification (at least 20 characters, required above ${formatCents(limit)})`} attention={over} maxLength={500} rows={3} value={l.justification} onChange={(e) => patch(l.key, { justification: e.target.value })} />
+                </div>
               )}
               {l.id ? (
                 <div className="dropzone" onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); drop(l, e.dataTransfer.files[0]); }}>
+                  <span className="icon-tile" aria-hidden="true"><Upload size={20} /></span>
+                  <span className="dropzone__text"><strong>Drop a receipt here</strong><span className="muted">JPEG, PNG or PDF, up to 10 MB.</span></span>
+                  <span className="actions">
+                    <label className="button btn--secondary">Take photo<input type="file" accept="image/*" capture="environment" onChange={(e) => upload(l, e)} /></label>
+                    <label className="button btn--secondary">Choose file<input type="file" accept="image/jpeg,image/png,application/pdf" onChange={(e) => upload(l, e)} /></label>
+                  </span>
                   <ul className="plain chips">
                     {l.receipts.map((r) => (
-                      <li key={r.id} className="chip">{r.originalName ?? 'Receipt'} <button type="button" onClick={() => dropReceipt(l, r)} aria-label={`Remove receipt ${r.originalName ?? ''}`.trim()}>Remove</button></li>
+                      <li key={r.id} className="chip"><Check aria-hidden="true" size={14} />{r.originalName ?? 'Receipt'} <button type="button" onClick={() => dropReceipt(l, r)} aria-label={`Remove receipt ${r.originalName ?? ''}`.trim()}>Remove</button></li>
                     ))}
                   </ul>
-                  <label className="button">Take photo<input type="file" accept="image/*" capture="environment" onChange={(e) => upload(l, e)} /></label>
-                  <label className="button">Choose file<input type="file" accept="image/jpeg,image/png,application/pdf" onChange={(e) => upload(l, e)} /></label>
                 </div>
-              ) : <p>Save the claim to add receipts.</p>}
+              ) : <p className="muted">Save the claim to add receipts.</p>}
               {l.err && <Alert>{l.err}</Alert>}
-              {lines.length > 1 && <Button variant="secondary" onClick={() => dropLine(l)}>Remove line</Button>}
+              {lines.length > 1 && <p><Button variant="secondary" onClick={() => dropLine(l)}>Remove line</Button></p>}
             </Card>
             );
           })}
-          <p><Button variant="secondary" onClick={() => setLines((ls) => [...ls, blank(cats[0]?.code ?? '')])}>Add line</Button></p>
-          <Button type="submit">Save claim</Button>
+          <div className="actions">
+            <Button variant="ghost" icon={<Plus aria-hidden="true" size={16} />} onClick={() => setLines((ls) => [...ls, blank(cats[0]?.code ?? '')])}>Add line</Button>
+            <Button type="submit">Save claim</Button>
+          </div>
         </form>
+        <aside className="two-col__side" aria-label="Claim summary">
+          <div className="card sticky">
+            <span className="muted">Claim total</span>
+            <p className="big-total">{formatCents(totalCents)}</p>
+            <p className="muted">{lines.length} {lines.length === 1 ? 'line' : 'lines'}</p>
+            <h2>Policy check</h2>
+            <ul className="check-list">
+              {overLines.length === 0
+                ? <li><span className="check-dot" aria-hidden="true"><Check size={12} /></span>Every line is within its category limit</li>
+                : overLines.map((x) => <li key={x.l.key}><span className="check-dot check-dot--warn" aria-hidden="true">!</span>{`Line ${x.i + 1} is over its limit and needs a justification`}</li>)}
+              <li><span className="check-dot" aria-hidden="true"><Check size={12} /></span>All rules are checked again when you submit</li>
+            </ul>
+          </div>
+        </aside>
+        </div>
       )}
       <p><a href="/claims">Back to my claims</a></p>
     </section>
