@@ -71,3 +71,13 @@ table.table tbody tr { transition: background-color var(--motion); }
 table.table tbody tr:hover { background: var(--bg); }
 .num { text-align: right; font-variant-numeric: tabular-nums; }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; animation: none !important; } }
+
+/* C-53 account screens: split layout at >= 768px (matches WIDE), form card only below. */
+main.auth { display: grid; max-width: none; min-height: 100vh; padding: 0; }
+.auth__aside { display: none; }
+.auth__panel { display: flex; align-items: center; justify-content: center; padding: var(--space-3); }
+.auth__panel .card { width: 100%; max-width: 28rem; }
+@media (min-width: 768px) {
+  main.auth { grid-template-columns: 1fr 1fr; }
+  .auth__aside { display: flex; align-items: center; justify-content: center; background: var(--surface); border-right: 1px solid var(--border); font-size: var(--fs-title); font-weight: var(--fw-title); }
+}
