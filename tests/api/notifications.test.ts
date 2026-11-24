@@ -192,3 +192,66 @@ test('S3 AC-8 one run sends 50 of 60 due rows', async () => {
   assert.equal(sentMail.length, 50);
   assert.equal(await prisma.notification.count({ where: { status: 'pending' } }), 10);
 });
+
+// CLAIM-8-S4: back-off, deadline, streak, timeout.
+const T0 = Date.UTC(2026, 0, 1);
+const MIN = 60_000;
+let nowMin = 0;
+const sends: number[] = [];
+let okFrom = Infinity;
+let hang = false;
+const mailer4 = { notifyMail: async () => { sends.push(nowMin); if (hang) return new Promise(() => {}); if (nowMin < okFrom) throw new Error('down'); } } as never;
+const run4 = (sendTimeoutMs?: number) => runOnce({ prisma, clock: () => new Date(T0 + nowMin * MIN), mailer: mailer4, publicBaseUrl: 'http://app.test', sendTimeoutMs, log: createLogger({ write: (l: string) => { dlogs.push(l); return true; } }) });
+const mk4 = async (createdMin = 0, attempts = 0, dueMin = createdMin) => {
+  const c = await mkMoved('submitted', 'approve_final');
+  await prisma.notification.updateMany({ where: { claimId: c.id }, data: { createdAt: new Date(T0 + createdMin * MIN), nextAttemptAt: new Date(T0 + dueMin * MIN), attempts } });
+  return c;
+};
+beforeEach(() => { nowMin = 0; sends.length = 0; okFrom = Infinity; hang = false; });
+
+test('S4 AC-1 back-off schedule to the deadline, then failed and never sent again', async () => {
+  const c = await mk4();
+  for (nowMin = 0; nowMin <= 140; nowMin++) await run4();
+  assert.deepEqual(sends, [0, 1, 3, 7, 15, 30, 45, 60, 75, 90, 105, 120]);
+  const [r] = await rows(c.id);
+  assert.deepEqual([r.status, r.attempts], ['failed', 12]);
+  const ev = dlogs.map((l) => JSON.parse(l).mailEvent);
+  assert.deepEqual([ev.filter((e) => e === 'retry').length, ev.at(-1)], [11, 'failed']);
+  assert.ok(!dlogs.join('').includes('emp@claimflow.test'));
+});
+
+test('S4 AC-2 mailer recovering at minute 100 gets the row sent once', async () => {
+  const c = await mk4(); okFrom = 100;
+  for (nowMin = 0; nowMin <= 140; nowMin++) await run4();
+  assert.deepEqual(sends.slice(-2), [90, 105]);
+  assert.equal((await rows(c.id))[0].status, 'sent');
+});
+
+test('S4 AC-3 jump to 119 gives a last attempt, 121 fails without a send; expired rows skip the streak', async () => {
+  const a = await mk4(0, 1, 1);
+  nowMin = 119; await run4();
+  assert.deepEqual([sends.length, (await rows(a.id))[0].status], [1, 'failed']);
+  sends.length = 0;
+  const exp = [await mk4(0, 1, 1), await mk4(0, 1, 2), await mk4(0, 1, 3)];
+  const live = await mk4(111, 0, 111);
+  nowMin = 121; await run4();
+  for (const c of exp) assert.deepEqual([(await rows(c.id))[0].status, (await rows(c.id))[0].attempts], ['failed', 1]);
+  assert.equal(sends.length, 1);
+  assert.equal((await rows(live.id))[0].attempts, 1);
+});
+
+test('S4 AC-4 three failures end the run, the other two rows are untouched', async () => {
+  for (let i = 0; i < 5; i++) await mk4();
+  await run4();
+  const rs = await rows();
+  assert.deepEqual([rs.filter((r) => r.attempts === 1).length, rs.filter((r) => r.attempts === 0).length, sends.length], [3, 2, 3]);
+});
+
+test('S4 AC-5 hanging mailer is a failure after the timeout and does not block the next run', async () => {
+  const c = await mk4(); hang = true;
+  await run4(20);
+  assert.equal((await rows(c.id))[0].attempts, 1);
+  hang = false; okFrom = 0; nowMin = 1;
+  await run4(20);
+  assert.equal((await rows(c.id))[0].status, 'sent');
+});
