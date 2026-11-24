@@ -7,7 +7,8 @@ import { moveClaim } from './status.js';
 import { approvalsComplete } from './payment.js';
 import { canReadClaim, requireFinance } from '../auth/authz.js';
 import { nearestActiveAbove } from '../users/service.js';
-import { checkActor, decideApproval, rejectAction } from './approval.js';
+import { checkActor, decideApproval, rejectAction, SECOND_APPROVAL_CENTS } from './approval.js';
+import { paidClaimsCsv } from './export.js';
 import { checkSubmit, pickDuplicates, SubmitRefused, utcToday, type Hit } from './policy.js';
 
 export interface ClaimDeps { prisma: PrismaClient; clock: Clock; receipts: ReceiptStore; beforeAppend?: () => void | Promise<void> /* test hook: fail the history insert */ }
@@ -146,6 +147,17 @@ export async function listPayments(d: ClaimDeps, q: { limit?: unknown; offset?: 
     };
   });
   return { count: Number(agg[0].n), totalCents: Number(agg[0].t ?? 0), items };
+}
+
+// E-41 (FR-4): finance only (checked by the caller); two raw queries, whole document built before the first byte.
+export async function exportPaidClaims(d: ClaimDeps, q: { from?: unknown; to?: unknown }) {
+  const from = validDate(q.from), to = validDate(q.to);
+  if (from > to) throw bad('from must not be after to');
+  const [lines, events] = await Promise.all([
+    d.prisma.$queryRaw<{ claimId: string; employee: string; category: string; amountCents: number; paymentDate: string; paymentReference: string }[]>`SELECT c."id" AS claimId, u."name" AS employee, g."label" AS category, l."amountCents" AS amountCents, c."paymentDate" AS paymentDate, c."paymentReference" AS paymentReference FROM "Claim" c JOIN "User" u ON u."id" = c."claimantId" JOIN "ClaimLine" l ON l."claimId" = c."id" JOIN "Category" g ON g."code" = l."categoryCode" WHERE c."status" = 'paid' AND c."paymentDate" >= ${from} AND c."paymentDate" <= ${to} ORDER BY c."paymentDate", c."id", l."position"`,
+    d.prisma.$queryRaw<{ claimId: string; action: string; actorName: string }[]>`SELECT e."claimId" AS claimId, e."action" AS action, a."name" AS actorName FROM "ClaimEvent" e JOIN "Claim" c ON c."id" = e."claimId" JOIN "User" a ON a."id" = e."actorId" WHERE c."status" = 'paid' AND c."paymentDate" >= ${from} AND c."paymentDate" <= ${to} ORDER BY e."claimId", e."seq"`,
+  ]);
+  return { ...paidClaimsCsv(lines, events), from, to };
 }
 
 // E-22. One query (no N+1); 404 before 403 (architecture section 6).
@@ -316,10 +328,11 @@ export const submitClaim = (d: ClaimDeps, user: User, id: string) => withWrite(d
   const now = d.clock();
   const full = await tx.claim.findUniqueOrThrow({ where: { id }, select: { title: true, purpose: true, lines: { select: { id: true, position: true, date: true, categoryCode: true, amountCents: true, justification: true, receipts: { select: { sha256: true } } } } } });
   const cats = await tx.category.findMany({ select: { code: true, limitCents: true } });
-  const failures = checkSubmit({ ...full, lines: full.lines.map(({ receipts, ...l }) => ({ ...l, receiptCount: receipts.length })) }, new Map(cats.map((x) => [x.code, x.limitCents])), utcToday(now));
+  const policy = await tx.policy.findUniqueOrThrow({ where: { id: 1 } }); // one read; the write lock makes it a complete policy
+  const failures = checkSubmit({ ...full, lines: full.lines.map(({ receipts, ...l }) => ({ ...l, receiptCount: receipts.length })) }, new Map(cats.map((x) => [x.code, x.limitCents])), utcToday(now), policy.receiptThresholdCents);
   if (failures.length) throw new SubmitRefused(failures, c.status); // before the first write
   const dups = await findDuplicates(tx, { id, claimantId: c.claimantId }, full.lines.map((l) => ({ ...l, shas: l.receipts.map((r) => r.sha256) })));
-  const ev = await moveClaim(tx, { claimId: id, action: c.status === 'draft' ? 'submit' : 'resubmit', actorId: user!.id, now, set: { approverId: mgr.id, submittedAt: now, updatedAt: now }, beforeAppend: d.beforeAppend });
+  const ev = await moveClaim(tx, { claimId: id, action: c.status === 'draft' ? 'submit' : 'resubmit', actorId: user!.id, now, set: { approverId: mgr.id, submittedAt: now, updatedAt: now, secondApprovalCents: policy.secondApprovalCents }, beforeAppend: d.beforeAppend });
   // One UPDATE: snapshot the limit and overwrite (or clear) both duplicate flags on every line.
   const flag = (col: 'claimId' | 'basis') => (dups.size ? Prisma.sql`CASE "id" ${Prisma.join([...dups].map(([lid, v]) => Prisma.sql`WHEN ${lid} THEN ${v[col]}`), ' ')} ELSE NULL END` : Prisma.sql`NULL`);
   await tx.$executeRaw`UPDATE "ClaimLine" SET "limitCents" = (SELECT "limitCents" FROM "Category" WHERE "code" = "ClaimLine"."categoryCode"), "duplicateClaimId" = ${flag('claimId')}, "duplicateBasis" = ${flag('basis')} WHERE "claimId" = ${id}`;
@@ -330,14 +343,14 @@ export const withdrawClaim = (d: ClaimDeps, user: User, id: string, body: Record
   await ownForMove(tx, user, id, ['submitted']);
   const reason = body.reason === undefined || body.reason === null ? null : typeof body.reason === 'string' && body.reason.length <= 500 ? body.reason : (() => { throw bad('reason must be at most 500 characters'); })();
   const now = d.clock();
-  const ev = await moveClaim(tx, { claimId: id, action: 'withdraw', actorId: user!.id, reason, now, set: { approverId: null, submittedAt: null, updatedAt: now }, beforeAppend: d.beforeAppend });
+  const ev = await moveClaim(tx, { claimId: id, action: 'withdraw', actorId: user!.id, reason, now, set: { approverId: null, submittedAt: null, updatedAt: now, secondApprovalCents: null }, beforeAppend: d.beforeAppend });
   await tx.claimLine.updateMany({ where: { claimId: id }, data: { duplicateClaimId: null, duplicateBasis: null } });
   return { claim: await reload(tx, id), ev };
 });
 
 // E-34 / E-35. 404, then checkActor (403 self_approval / forbidden, 409); shared by approve and reject.
 async function loadActor(tx: Tx, user: User, id: string) {
-  const c = await tx.claim.findUnique({ where: { id }, select: { id: true, claimantId: true, status: true, approverId: true, lines: { select: { amountCents: true } } } });
+  const c = await tx.claim.findUnique({ where: { id }, select: { id: true, claimantId: true, status: true, approverId: true, secondApprovalCents: true, lines: { select: { amountCents: true } } } });
   if (!c) throw new HttpError(404, 'not_found');
   const me = user!.id;
   const firstApproverId = c.status === 'approved' ? ((await tx.claimEvent.findFirst({ where: { claimId: id, action: 'approve_first' }, orderBy: { seq: 'desc' }, select: { actorId: true } }))?.actorId ?? null) : null;
@@ -352,7 +365,7 @@ export const approveClaim = (d: ClaimDeps, user: User, id: string) => withWrite(
   const { c, me, firstApproverId } = await loadActor(tx, user, id);
   if (c.status === 'approved' && firstApproverId === me) throw new HttpError(403, 'forbidden');
   const second = c.status === 'submitted' ? await nearestActiveAbove(tx, me) : null;
-  const decision = decideApproval(c.status, c.lines.reduce((s, l) => s + l.amountCents, 0), second);
+  const decision = decideApproval(c.status, c.lines.reduce((s, l) => s + l.amountCents, 0), second, c.secondApprovalCents ?? SECOND_APPROVAL_CENTS);
   if (!decision) throw new HttpError(409, 'invalid_transition');
   if (decision.action === 'approve_first' && (second === me || second === c.claimantId)) throw new HttpError(403, 'forbidden');
   const now = d.clock();

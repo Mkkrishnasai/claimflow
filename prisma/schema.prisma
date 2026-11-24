@@ -102,22 +102,23 @@ model Category {
 }
 
 model Claim {
-  id               String       @id @default(uuid())
-  claimantId       String
-  claimant         User         @relation("Claimant", fields: [claimantId], references: [id], onDelete: Restrict)
-  title            String
-  purpose          String
-  status           ClaimStatus  @default(draft)
-  approverId       String?
-  approver         User?        @relation("Approver", fields: [approverId], references: [id], onDelete: Restrict)
-  createdAt        DateTime
-  updatedAt        DateTime
-  submittedAt      DateTime?
-  paymentDate      String?
-  paymentReference String?
-  lines            ClaimLine[]
-  events           ClaimEvent[]
-  receipts         Receipt[]
+  id                  String       @id @default(uuid())
+  claimantId          String
+  claimant            User         @relation("Claimant", fields: [claimantId], references: [id], onDelete: Restrict)
+  title               String
+  purpose             String
+  status              ClaimStatus  @default(draft)
+  approverId          String?
+  approver            User?        @relation("Approver", fields: [approverId], references: [id], onDelete: Restrict)
+  createdAt           DateTime
+  updatedAt           DateTime
+  submittedAt         DateTime?
+  paymentDate         String?
+  paymentReference    String?
+  secondApprovalCents Int?
+  lines               ClaimLine[]
+  events              ClaimEvent[]
+  receipts            Receipt[]
 
   @@index([claimantId, updatedAt])
   @@index([approverId, status])
@@ -177,4 +178,10 @@ model ClaimEvent {
   at         DateTime
 
   @@unique([claimId, seq])
+}
+
+model Policy {
+  id                    Int @id
+  receiptThresholdCents Int
+  secondApprovalCents   Int
 }

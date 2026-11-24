@@ -8,7 +8,9 @@ import { createApp } from '../../api/src/app.js';
 import { createLogger } from '../../api/src/logger.js';
 
 const PW = 'correct horse battery';
-const prisma = new PrismaClient();
+const queries: string[] = [];
+const prisma = new PrismaClient({ log: [{ emit: 'event', level: 'query' }] });
+(prisma as unknown as { $on: (e: string, f: (q: { query: string }) => void) => void }).$on('query', (q) => { queries.push(q.query); });
 let srv: Server, base: string;
 const GUARDS = ['claim_event_no_delete', 'claim_paid_no_delete', 'line_paid_del', 'receipt_paid_del']; // paid claims and history are undeletable by trigger
 const wipe = async () => {
@@ -104,4 +106,34 @@ test('NFR-PERF-1 POST /api/claims/:id/send-back p95 under 500 ms over 20 distinc
   }
   times.sort((a, b) => a - b);
   assert.ok(times[Math.floor(times.length * 0.95)] < 500);
+});
+
+test('NFR-PERF-2 GET /api/exports/paid-claims.csv 10,000 paid claims (30,000 lines): p95 under 5 s over 5 runs, at most 3 claim queries', async () => {
+  await prisma.claimLine.deleteMany({ where: { claimId: { startsWith: 'p' } } });
+  const ids = Array.from({ length: 10_000 }, (_, i) => `p${String(i).padStart(5, '0')}`);
+  for (let i = 0; i < ids.length; i += 1000) await prisma.claim.createMany({ data: ids.slice(i, i + 1000).map((id) => ({ id, claimantId: 'emp', title: 't', purpose: 'purpose text', status: 'draft' as const, createdAt: new Date(), updatedAt: new Date() })) });
+  const lines = ids.flatMap((id) => [1, 2, 3].map((position) => ({ claimId: id, position, date: '2026-03-01', categoryCode: 'meals', amountCents: 1000, description: 'x' })));
+  for (let i = 0; i < lines.length; i += 3000) await prisma.claimLine.createMany({ data: lines.slice(i, i + 3000) });
+  await prisma.claim.updateMany({ where: { id: { startsWith: 'p' } }, data: { status: 'paid', paymentDate: '2026-03-10', paymentReference: 'INV-1' } });
+  const pre = await fetch(`${base}/api/auth/csrf`);
+  const token = ((await pre.json()) as { csrfToken: string }).csrfToken;
+  const r = await fetch(`${base}/api/auth/sign-in`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-csrf-token': token, cookie: pre.headers.getSetCookie()[0].split(';')[0] },
+    body: JSON.stringify({ email: 'fin@claimflow.test', password: PW }),
+  });
+  const cookie = r.headers.getSetCookie().find((c) => c.startsWith('sid='))!.split(';')[0];
+  const times: number[] = [];
+  for (let i = 0; i < 5; i++) {
+    queries.length = 0;
+    const t = performance.now();
+    const res = await fetch(`${base}/api/exports/paid-claims.csv?from=2026-03-01&to=2026-03-31`, { headers: { cookie } });
+    const csv = await res.text();
+    times.push(performance.now() - t);
+    assert.equal(res.status, 200);
+    assert.equal(csv.split('\r\n').filter(Boolean).length, 30_001);
+    assert.ok(queries.filter((q) => /"Claim(Line|Event)?"/.test(q)).length <= 3);
+  }
+  times.sort((a, b) => a - b);
+  assert.ok(times[Math.floor(times.length * 0.95)] < 5000);
 });

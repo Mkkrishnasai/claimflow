@@ -4,7 +4,7 @@ import { checkSubmit, pickDuplicates, SubmitRefused, utcToday, type PolicyLine }
 const limits = new Map([['meals', 5000], ['accommodation', 20000]]);
 const T = '2026-06-30';
 const line = (o: Partial<PolicyLine> = {}): PolicyLine => ({ id: 'l1', position: 1, date: T, categoryCode: 'meals', amountCents: 1000, justification: null, receiptCount: 0, ...o });
-const run = (l: Partial<PolicyLine>, c = {}) => checkSubmit({ title: 'T', purpose: 'long enough purpose', lines: [line(l)], ...c }, limits, T).map((f) => f.code);
+const run = (l: Partial<PolicyLine>, c = {}) => checkSubmit({ title: 'T', purpose: 'long enough purpose', lines: [line(l)], ...c }, limits, T, 2500).map((f) => f.code);
 
 test('clean claim has no failures; utcToday uses the UTC date', () => {
   expect(run({})).toEqual([]);
@@ -27,6 +27,13 @@ test('receipt required from 2500 cents', () => {
   expect(run({ amountCents: 2500 })).toEqual(['receipt_required']);
   expect(run({ amountCents: 2500, receiptCount: 1 })).toEqual([]);
 });
+test('receipt threshold is a parameter and named in the message', () => {
+  const f = (amountCents: number, t: number) => checkSubmit({ title: 'T', purpose: 'long enough purpose', lines: [line({ amountCents })] }, limits, T, t);
+  expect(f(2999, 3000)).toEqual([]);
+  expect(f(3000, 3000).map((x) => [x.code, x.message])).toEqual([['receipt_required', 'A receipt is required from EUR 30.00']]);
+  expect(f(2500, 2500)[0].message).toBe('A receipt is required from EUR 25.00');
+  expect(f(1000, 1000)).toHaveLength(1);
+});
 test('justification: over limit needs 20 trimmed chars; at limit needs none', () => {
   const o = { amountCents: 5001, receiptCount: 1 };
   expect(run({ ...o, justification: null })).toEqual(['justification_required']);
@@ -37,8 +44,8 @@ test('justification: over limit needs 20 trimmed chars; at limit needs none', ()
   expect(run({ amountCents: 20001, categoryCode: 'accommodation', receiptCount: 1 })).toEqual(['justification_required']);
 });
 test('claim-level rules, no_lines, and ordering (claim first, then position, then rule order)', () => {
-  expect(checkSubmit({ title: ' ', purpose: 'short', lines: [] }, limits, T).map((f) => f.code)).toEqual(['title_invalid', 'purpose_too_short', 'no_lines']);
-  const f = checkSubmit({ title: 'T', purpose: 'short', lines: [line({ id: 'b', position: 2, date: '2026-07-01' }), line({ id: 'a', position: 1, amountCents: 3000 })] }, limits, T);
+  expect(checkSubmit({ title: ' ', purpose: 'short', lines: [] }, limits, T, 2500).map((f) => f.code)).toEqual(['title_invalid', 'purpose_too_short', 'no_lines']);
+  const f = checkSubmit({ title: 'T', purpose: 'short', lines: [line({ id: 'b', position: 2, date: '2026-07-01' }), line({ id: 'a', position: 1, amountCents: 3000 })] }, limits, T, 2500);
   expect(f.map((x) => [x.code, x.position])).toEqual([['purpose_too_short', undefined], ['receipt_required', 1], ['date_in_future', 2]]);
 });
 test('SubmitRefused carries the 422 contract with a count reason', () => {

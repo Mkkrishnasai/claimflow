@@ -44,7 +44,7 @@ test('accounts migration upgrades 5 seeded users without loss', () => {
   rmSync(tmp, { recursive: true, force: true });
 });
 
-test('payment migration: columns, index, 11 triggers, additive SQL', () => {
+test('payment migration: columns, index, 15 triggers (11 + 4 policy), additive SQL', () => {
   const dir = readdirSync(join(root, 'prisma/migrations')).find((d) => d.endsWith('_payment'))!;
   assert.doesNotMatch(readFileSync(join(root, 'prisma/migrations', dir, 'migration.sql'), 'utf8'), /RedefineTables|DROP TABLE "Claim"/);
   const db = join(mkdtempSync(join(tmpdir(), 'mig2-')), 'p.db');
@@ -55,6 +55,37 @@ test('payment migration: columns, index, 11 triggers, additive SQL', () => {
   assert.ok(cols.includes('paymentDate') && cols.includes('paymentReference'));
   assert.equal(JSON.parse(q(`SELECT name FROM sqlite_master WHERE name = 'Claim_status_updatedAt_idx'`)).length, 1);
   const trg = JSON.parse(q(`SELECT name FROM sqlite_master WHERE type = 'trigger'`)).map((r: { name: string }) => r.name);
-  assert.equal(trg.length, 11);
+  assert.equal(trg.length, 15); // 11 earlier + 4 policy
   assert.ok(trg.includes('claim_paid_needs_payment'));
+});
+
+test('policy migration: seed, bounds, permanent row, frozen paid claim, additive SQL', () => {
+  const dir = readdirSync(join(root, 'prisma/migrations')).find((d) => d.endsWith('_policy'))!;
+  assert.doesNotMatch(readFileSync(join(root, 'prisma/migrations', dir, 'migration.sql'), 'utf8'), /RedefineTables|DROP TABLE "Claim"/);
+  const db = join(mkdtempSync(join(tmpdir(), 'mig3-')), 'q.db');
+  const e = { ...env, DATABASE_URL: `file:${db}` };
+  assert.equal(spawnSync(join(root, 'node_modules/.bin/prisma'), ['migrate', 'deploy'], { cwd: root, env: e, encoding: 'utf8' }).status, 0);
+  const run = (s: string) => spawnSync('sqlite3', ['-json', db, s], { encoding: 'utf8' });
+  const q = (s: string) => JSON.parse(run(s).stdout || '[]');
+  assert.deepEqual(q('SELECT * FROM "Policy"'), [{ id: 1, receiptThresholdCents: 2500, secondApprovalCents: 200000 }]);
+  assert.ok(q(`SELECT name FROM pragma_table_info('Claim')`).some((r: { name: string }) => r.name === 'secondApprovalCents'));
+  assert.equal(q('SELECT count(*) AS n FROM "Claim" WHERE "secondApprovalCents" IS NOT NULL')[0].n, 0);
+
+  run(`INSERT INTO "Category" (code,label,limitCents) VALUES ('t','t',100)`);
+  for (const [tbl, col, where] of [['Policy', 'receiptThresholdCents', 'id=1'], ['Policy', 'secondApprovalCents', 'id=1'], ['Category', 'limitCents', `code='t'`]]) {
+    for (const bad of [0, 1000001]) {
+      assert.notEqual(run(`UPDATE "${tbl}" SET "${col}"=${bad} WHERE ${where}`).status, 0);
+    }
+    assert.equal(run(`UPDATE "${tbl}" SET "${col}"=1000000 WHERE ${where}`).status, 0);
+    assert.equal(q(`SELECT "${col}" AS v FROM "${tbl}" WHERE ${where}`)[0].v, 1000000);
+  }
+  assert.notEqual(run(`INSERT INTO "Policy" VALUES (2,1,1)`).status, 0);
+  assert.notEqual(run(`DELETE FROM "Policy" WHERE id=1`).status, 0);
+  assert.equal(q('SELECT count(*) AS n FROM "Policy"')[0].n, 1);
+
+  const trg = q(`SELECT name FROM sqlite_master WHERE type = 'trigger'`);
+  assert.equal(trg.length, 15);
+  run(`INSERT INTO "User" (id,email,passwordHash,role) VALUES ('u','u@x','h','employee')`);
+  run(`INSERT INTO "Claim" (id,claimantId,title,purpose,status,createdAt,updatedAt,paymentDate,paymentReference) VALUES ('c','u','t','p','paid','2026-01-01','2026-01-01','2026-01-02','R1')`);
+  assert.notEqual(run(`UPDATE "Claim" SET paymentReference='R2' WHERE id='c'`).status, 0);
 });

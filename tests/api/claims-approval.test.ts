@@ -323,3 +323,32 @@ test('reject AC-5b the approver cannot write claim or line routes: 403, no row c
   for (const [m, p] of [['PATCH', `/lines/${lid}`], ['POST', '/lines'], ['DELETE', `/lines/${lid}`], ['PATCH', '']]) assert.equal((await w(m, p)).status, 403, `${m} ${p}`);
   assert.deepEqual(await state(c.id), before);
 });
+
+// ---- CLAIM-7-S7: the second-approval threshold is the one stored at submit ----
+const snapped = async (cents: number, snapshot: number | null) => {
+  const c = await mkc('E', 'submitted', 'M', [cents]);
+  await prisma.claim.update({ where: { id: c.id }, data: { secondApprovalCents: snapshot } });
+  return c;
+};
+
+test('S7 AC-1: snapshot 250000 - 220000 needs one approval, 250001 goes to approve_first', async () => {
+  const a = await snapped(220_000, 250_000);
+  assert.equal((await post('M', a.id)).status, 200);
+  assert.deepEqual((await state(a.id)).actions, ['approve_final']);
+  const b = await snapped(250_001, 250_000);
+  assert.equal((await post('M', b.id)).status, 200);
+  assert.deepEqual([(await state(b.id)).status, (await state(b.id)).actions], ['approved', ['approve_first']]);
+});
+
+test('S7 AC-2: a claim keeps its snapshot after finance raises the live threshold', async () => {
+  const c = await snapped(220_000, 200_000);
+  await prisma.policy.update({ where: { id: 1 }, data: { secondApprovalCents: 250_000 } });
+  try { assert.equal((await post('M', c.id)).status, 200); } finally { await prisma.policy.update({ where: { id: 1 }, data: { secondApprovalCents: 200_000 } }); }
+  assert.deepEqual([(await state(c.id)).status, (await state(c.id)).actions], ['approved', ['approve_first']]);
+});
+
+test('S7 AC-3: null snapshot falls back to 200000', async () => {
+  const c = await snapped(200_001, null);
+  assert.equal((await post('M', c.id)).status, 200);
+  assert.deepEqual((await state(c.id)).actions, ['approve_first']);
+});

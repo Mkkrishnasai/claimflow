@@ -572,3 +572,89 @@ test('CLAIM-6-S7 payment screen: controls, send-back error focus, pay, own claim
   await emp.getByText('INV-0042').waitFor();
   assert.equal(await emp.getByRole('button', { name: /Mark paid|Send back/ }).count(), 0);
 });
+
+test('CLAIM-7-S8 policy screen: load, validate, save once, access, a11y at 360 px', async () => {
+  const page = await phone();
+  await page.goto(WEB + '/sign-in');
+  await page.fill('#email', 'finance@claimflow.test');
+  await page.fill('#password', PW);
+  await page.press('#password', 'Enter');
+  await page.getByRole('heading', { name: 'My claims' }).waitFor();
+  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Policy' }).click();
+  await page.getByRole('heading', { name: 'Policy settings', level: 1 }).waitFor();
+  await page.getByLabel('Meals limit').waitFor();
+  assert.equal(await page.evaluate(() => document.activeElement?.tagName), 'H1');
+  assert.equal(await page.locator('form input').count(), 8);
+  assert.equal(await page.getByLabel('Meals limit').inputValue(), '50.00');
+  await page.getByText('Changes apply to claims submitted from now on. Claims already submitted keep their current values.').waitFor();
+  await clean(page, '/policy', true);
+
+  await page.getByRole('button', { name: 'Save policy' }).click();
+  await page.getByRole('status').getByText('No changes to save').waitFor();
+  for (const bad of ['abc', '0', '10000.01']) {
+    await page.getByLabel('Meals limit').fill(bad);
+    await page.getByRole('button', { name: 'Save policy' }).click();
+    await page.locator('#e-' + (await page.getByLabel('Meals limit').getAttribute('id'))!.slice(2)).waitFor();
+  }
+
+  let patches = 0;
+  page.on('request', (r) => { if (r.method() === 'PATCH' && r.url().endsWith('/api/policy')) patches++; });
+  await page.getByLabel('Meals limit').fill('60');
+  await page.getByRole('button', { name: 'Save policy' }).dblclick();
+  await page.getByRole('status').getByText('Policy saved').waitFor();
+  assert.equal(patches, 1);
+  assert.equal(await page.getByLabel('Meals limit').inputValue(), '60.00');
+
+  const emp = await phone();
+  await emp.goto(WEB + '/sign-in');
+  await emp.fill('#email', 'employee@claimflow.test');
+  await emp.fill('#password', PW);
+  await emp.press('#password', 'Enter');
+  await emp.getByRole('heading', { name: 'My claims' }).waitFor();
+  assert.equal(await emp.getByRole('link', { name: 'Policy' }).count(), 0);
+  await emp.goto(`${WEB}/policy`);
+  await emp.getByRole('alert').getByText('Access denied').waitFor();
+  assert.equal(await emp.locator('form').count(), 0);
+});
+
+test('CLAIM-7-S9 export screen: download, range validity, failure, access, a11y at 360 px', async () => {
+  const page = await phone();
+  await page.goto(WEB + '/sign-in');
+  await page.fill('#email', 'finance@claimflow.test');
+  await page.fill('#password', PW);
+  await page.press('#password', 'Enter');
+  await page.getByRole('heading', { name: 'My claims' }).waitFor();
+  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Export' }).click();
+  await page.getByRole('heading', { name: 'Export paid claims', level: 1 }).waitFor();
+  await page.getByLabel('From').waitFor();
+  assert.equal(await page.evaluate(() => document.activeElement?.tagName), 'H1');
+  await clean(page, '/export', true);
+
+  const btn = page.getByRole('button', { name: 'Download CSV' });
+  assert.ok(await btn.isDisabled());
+  await page.getByLabel('From').fill('2026-03-15');
+  assert.ok(await btn.isDisabled());
+  await page.getByLabel('To').fill('2026-03-01');
+  assert.ok(await btn.isDisabled());
+  await page.getByLabel('To').fill('2026-03-15');
+  assert.ok(await btn.isEnabled());
+  await page.getByLabel('From').fill('2026-03-01');
+  const [dl] = await Promise.all([page.waitForEvent('download'), btn.click()]);
+  assert.equal(dl.suggestedFilename(), 'paid-claims-2026-03-01-to-2026-03-15.csv');
+
+  await page.route('**/api/exports/paid-claims.csv?*', (r) => r.fulfill({ status: 422, contentType: 'application/json', body: JSON.stringify({ error: 'invalid_input', reason: 'Bad range' }) }));
+  await btn.click();
+  await page.getByRole('alert').getByText('Bad range').waitFor();
+  assert.ok(await btn.isEnabled());
+
+  const emp = await phone();
+  await emp.goto(WEB + '/sign-in');
+  await emp.fill('#email', 'employee@claimflow.test');
+  await emp.fill('#password', PW);
+  await emp.press('#password', 'Enter');
+  await emp.getByRole('heading', { name: 'My claims' }).waitFor();
+  assert.equal(await emp.getByRole('link', { name: 'Export' }).count(), 0);
+  await emp.goto(`${WEB}/export`);
+  await emp.getByRole('alert').getByText('Access denied').waitFor();
+  assert.equal(await emp.locator('form').count(), 0);
+});

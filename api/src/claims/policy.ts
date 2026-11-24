@@ -1,9 +1,9 @@
 import { HttpError } from '../middleware.js';
+import { euro } from './export.js';
 
 // C-30: pure submit rules over loaded claim data. Integer-only; messages are fixed literals (NFR-SEC-2).
 export const MIN_CENTS = 1;
 export const MAX_CENTS = 1_000_000;
-export const RECEIPT_FROM_CENTS = 2500;
 export const WINDOW_DAYS = 90;
 export const JUSTIFICATION_MIN = 20;
 
@@ -18,7 +18,6 @@ const MSG: Record<string, string> = {
   amount_out_of_range: 'Amount must be from 1 to 1000000 cents',
   date_in_future: 'Date must not be in the future',
   date_too_old: 'Date must be within the last 90 days',
-  receipt_required: 'A receipt is required from EUR 25.00',
   justification_required: 'A justification of at least 20 characters is required above the category limit',
 };
 
@@ -34,7 +33,7 @@ const daysBefore = (day: string, n: number): string => {
   return new Date(Date.UTC(y, m - 1, d - n)).toISOString().slice(0, 10);
 };
 
-export function checkSubmit(c: PolicyClaim, limits: ReadonlyMap<string, number>, today: string): Failure[] {
+export function checkSubmit(c: PolicyClaim, limits: ReadonlyMap<string, number>, today: string, receiptFromCents: number): Failure[] {
   const out: Failure[] = [];
   const claimLevel = (code: string) => out.push({ code, message: MSG[code] });
   const t = c.title.trim().length;
@@ -43,11 +42,11 @@ export function checkSubmit(c: PolicyClaim, limits: ReadonlyMap<string, number>,
   if (c.lines.length === 0) claimLevel('no_lines');
   const oldest = daysBefore(today, WINDOW_DAYS);
   for (const l of [...c.lines].sort((a, b) => a.position - b.position)) {
-    const add = (code: string) => out.push({ code, lineId: l.id, position: l.position, message: MSG[code] });
+    const add = (code: string) => out.push({ code, lineId: l.id, position: l.position, message: code === 'receipt_required' ? `A receipt is required from EUR ${euro(receiptFromCents)}` : MSG[code] });
     if (l.amountCents < MIN_CENTS || l.amountCents > MAX_CENTS) add('amount_out_of_range');
     if (l.date > today) add('date_in_future');
     if (l.date < oldest) add('date_too_old');
-    if (l.amountCents >= RECEIPT_FROM_CENTS && l.receiptCount === 0) add('receipt_required');
+    if (l.amountCents >= receiptFromCents && l.receiptCount === 0) add('receipt_required');
     if (l.amountCents > (limits.get(l.categoryCode) ?? 0) && (l.justification ?? '').trim().length < JUSTIFICATION_MIN) add('justification_required');
   }
   return out;

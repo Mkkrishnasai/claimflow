@@ -264,3 +264,111 @@ test('AC-10 resubmit after reject and after finance send-back: 422 stays rejecte
   assert.equal(r.status, 200); assert.equal(r.j.approverId, 'mgr2');
   assert.deepEqual(await hist(sb), ['send_back', 'resubmit']);
 });
+
+// ---- CLAIM-7-S6: policy applied at submit and snapshotted ----
+const withPolicy = async (cat: Record<string, number>, pol: { receiptThresholdCents?: number; secondApprovalCents?: number }, fn: () => Promise<void>) => {
+  const old = await prisma.category.findMany();
+  const oldPol = await prisma.policy.findUniqueOrThrow({ where: { id: 1 } });
+  try {
+    for (const [code, limitCents] of Object.entries(cat)) await prisma.category.update({ where: { code }, data: { limitCents } });
+    await prisma.policy.update({ where: { id: 1 }, data: pol });
+    await fn();
+  } finally {
+    for (const c of old) await prisma.category.update({ where: { code: c.code }, data: { limitCents: c.limitCents } });
+    await prisma.policy.update({ where: { id: 1 }, data: { receiptThresholdCents: oldPol.receiptThresholdCents, secondApprovalCents: oldPol.secondApprovalCents } });
+  }
+};
+const line = (id: string) => prisma.claimLine.findFirstOrThrow({ where: { claimId: id } });
+
+test('S6 AC-1 raised limit applies to the next submit and is snapshotted', async () => {
+  const id2 = await withReceipts(await mkc([{ amountCents: 5500 }]));
+  assert.deepEqual(codes((await sub(id2)).j), ['justification_required']);
+  await withPolicy({ meals: 6000 }, {}, async () => {
+    const r = await sub(id2);
+    assert.equal(r.status, 200);
+    assert.equal((await line(id2)).limitCents, 6000);
+  });
+});
+
+test('S6 AC-2 lowered limit applies to the next submit', async () => {
+  await withPolicy({ travel: 1000 }, {}, async () => {
+    const id = await withReceipts(await mkc([{ amountCents: 1500, categoryCode: 'travel' }]));
+    assert.deepEqual(codes((await sub(id)).j), ['justification_required']);
+    await prisma.claimLine.updateMany({ where: { claimId: id }, data: { justification: 'x'.repeat(20) } });
+    assert.equal((await sub(id)).status, 200);
+  });
+});
+
+test('S6 AC-3 receipt boundary follows the policy; message names the threshold', async () => {
+  await withPolicy({ travel: 50000 }, { receiptThresholdCents: 3000 }, async () => {
+    assert.equal((await sub(await mkc([{ amountCents: 2500 }]))).status, 200);
+    const r = await sub(await mkc([{ amountCents: 3000 }]));
+    assert.equal(r.status, 422);
+    assert.deepEqual(codes(r.j), ['receipt_required']);
+    assert.match(r.j.failures[0].message, /EUR 30\.00/);
+  });
+  const d = await sub(await mkc([{ amountCents: 2500 }]));
+  assert.equal(d.j.failures[0].message, 'A receipt is required from EUR 25.00');
+});
+
+test('S6 AC-4 submitted claim keeps its over-limit flag and limit after finance raises it', async () => {
+  const id = await mkc([{ amountCents: 5500, justification: 'x'.repeat(20) }]);
+  await withReceipts(id);
+  assert.equal((await sub(id)).status, 200);
+  await withPolicy({ meals: 6000 }, {}, async () => {
+    const m = await signIn('mgr');
+    const d = (await (await fetch(`${base}/api/claims/${id}`, { headers: { cookie: m.cookie } })).json()) as J;
+    assert.deepEqual([d.lines[0].overLimit, d.lines[0].limitCents], [true, 5000]);
+    const inbox = (await (await fetch(`${base}/api/approvals`, { headers: { cookie: m.cookie } })).json()) as J;
+    assert.deepEqual(inbox.filter((c: J) => c.id === id).map((c: J) => [c.overLimitCount, c.lines[0].overLimit]), [[1, true]]);
+    await mv(id, 'approve_final');
+    const f = await signIn('fin');
+    const pay = JSON.stringify(await (await fetch(`${base}/api/payments`, { headers: { cookie: f.cookie } })).json());
+    assert.ok(pay.includes(id) && pay.includes('"overLimitCount":1'), pay);
+  });
+});
+
+test('S6 AC-5 no later receipt re-check: a claim submitted under a high threshold is approved and paid after it is lowered', async () => {
+  await withPolicy({}, { receiptThresholdCents: 3500 }, async () => {
+    const id = await mkc([{ amountCents: 3000 }]);
+    assert.equal((await sub(id)).status, 200);
+    await prisma.policy.update({ where: { id: 1 }, data: { receiptThresholdCents: 2500 } });
+    await mv(id, 'approve_final');
+    await withWrite(prisma, (tx) => moveClaim(tx, { claimId: id, action: 'pay', actorId: 'fin', now: new Date(0), set: { paymentDate: '2026-01-01', paymentReference: 'R1' } }));
+    assert.equal((await prisma.claim.findUniqueOrThrow({ where: { id } })).status, 'paid');
+  });
+});
+
+test('S6 AC-6 resubmit overwrites snapshots; withdraw nulls the second-approval snapshot; draft has none', async () => {
+  const id = await mkc([{ amountCents: 1000 }]);
+  assert.equal((await prisma.claim.findUniqueOrThrow({ where: { id } })).secondApprovalCents, null);
+  assert.equal((await sub(id)).status, 200);
+  let row = await prisma.claim.findUniqueOrThrow({ where: { id } });
+  assert.equal(row.secondApprovalCents, 200000); assert.equal((await line(id)).limitCents, 5000);
+  await mv(id, 'reject', 'long enough reason');
+  await withPolicy({ meals: 6000 }, { secondApprovalCents: 250000 }, async () => {
+    assert.equal((await sub(id)).status, 200);
+    row = await prisma.claim.findUniqueOrThrow({ where: { id } });
+    assert.equal(row.secondApprovalCents, 250000); assert.equal((await line(id)).limitCents, 6000);
+  });
+  assert.equal((await act(await signIn('emp'), id, 'withdraw')).status, 200);
+  assert.equal((await prisma.claim.findUniqueOrThrow({ where: { id } })).secondApprovalCents, null);
+});
+
+test('S6 AC-7 a submit racing a policy change sees one complete policy', async () => {
+  const id = await withReceipts(await mkc([{ amountCents: 5500, justification: 'x'.repeat(20) }]));
+  const patchP = withWrite(prisma, async (tx) => {
+    await tx.category.update({ where: { code: 'meals' }, data: { limitCents: 6000 } });
+    await tx.policy.update({ where: { id: 1 }, data: { secondApprovalCents: 250000 } });
+  });
+  try {
+    await Promise.all([sub(id), patchP]);
+    const row = await prisma.claim.findUniqueOrThrow({ where: { id } });
+    const l = await line(id);
+    const pair = [l.limitCents, row.secondApprovalCents].join();
+    assert.ok(pair === '5000,200000' || pair === '6000,250000', pair);
+  } finally {
+    await prisma.category.update({ where: { code: 'meals' }, data: { limitCents: 5000 } });
+    await prisma.policy.update({ where: { id: 1 }, data: { secondApprovalCents: 200000 } });
+  }
+});

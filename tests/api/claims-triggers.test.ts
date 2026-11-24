@@ -125,7 +125,8 @@ test('CLAIM-4 S1 submit_policy migration is additive and T1..T10 survive', async
   assert.equal((m.match(/ALTER TABLE "ClaimLine" ADD COLUMN/g) ?? []).length, 3);
   assert.equal((m.match(/CREATE INDEX "ClaimLine_date_categoryCode_amountCents_idx"/g) ?? []).length, 1);
   assert.doesNotMatch(m, /DROP TABLE|PRAGMA foreign_keys|new_ClaimLine/);
-  assert.equal(((await prisma.$queryRawUnsafe(`SELECT name FROM sqlite_master WHERE type = 'trigger'`)) as unknown[]).length, 11);
+  const names = ((await prisma.$queryRawUnsafe(`SELECT name FROM sqlite_master WHERE type = 'trigger'`)) as { name: string }[]).map((r) => r.name);
+  for (const n of ['claim_event_no_update', 'claim_event_no_delete', 'claim_paid_no_update', 'claim_paid_no_delete', 'line_paid_ins', 'line_paid_upd', 'line_paid_del', 'receipt_paid_ins', 'receipt_paid_upd', 'receipt_paid_del', 'claim_paid_needs_payment']) assert.ok(names.includes(n), n);
 });
 
 test('CLAIM-6 S1 AC-1/AC-2 paid needs date and reference; payment record then frozen', async () => {
