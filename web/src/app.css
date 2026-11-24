@@ -97,3 +97,6 @@ main.auth { display: grid; max-width: none; min-height: 100vh; padding: 0; }
 .summary > div { padding: var(--space-2) var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-card); }
 .summary dt { color: var(--text-2); }
 .summary dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; }
+.dropzone { margin-top: var(--space-2); padding: var(--space-2); border: 2px dashed var(--muted); border-radius: var(--radius-card); }
+.chip { display: inline-flex; align-items: center; gap: var(--space-1); margin: 0 var(--space-1) var(--space-1) 0; padding: 0 var(--space-1); border: 1px solid var(--border); border-radius: var(--radius-input); }
+ul.chips { display: flex; flex-wrap: wrap; margin: 0; }
