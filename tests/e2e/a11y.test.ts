@@ -665,3 +665,6 @@ test('360px nav disclosure opens with Enter/Space, closes with Escape, and the p
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth));
   await page.close();
 });
+
+// CLAIM-79-S13 AC-1: the same strict sweep with the OS in dark mode (light is the test above).
+test('AC-1 strict axe and no horizontal scroll on every route in dark at 360 px', () => visitRoutes((page, route) => clean(page, `${route} (dark)`), { width: 360, scheme: 'dark' }));
