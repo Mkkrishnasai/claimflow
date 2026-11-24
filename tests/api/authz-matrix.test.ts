@@ -42,7 +42,7 @@ const POS: Record<string, string> = { own: 'mgr', d1: 'd1', d2: 'd2', d3: 'd3', 
 
 before(async () => {
   const passwordHash = await bcrypt.hash(PW, 4);
-  await prisma.claimEvent.deleteMany(); await prisma.receipt.deleteMany(); await prisma.claimLine.deleteMany(); await prisma.claim.deleteMany();
+  await prisma.notification.deleteMany(); await prisma.claimEvent.deleteMany(); await prisma.receipt.deleteMany(); await prisma.claimLine.deleteMany(); await prisma.claim.deleteMany();
   await prisma.oneTimeToken.deleteMany();
   await prisma.session.deleteMany();
   await prisma.loginAttempt.deleteMany();
