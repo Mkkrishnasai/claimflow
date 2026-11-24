@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api, ApiError, onUnauthorized, setCsrf, type SessionUser } from './api';
+import { activeHref, navFor } from './nav';
 import SignIn from './screens/SignIn';
 import SetPassword from './screens/SetPassword';
 import ForgotPassword from './screens/ForgotPassword';
@@ -19,6 +20,7 @@ export default function App() {
   const [path, setPath] = useState(location.pathname);
   const [user, setUser] = useState<SessionUser | null>(null);
   const [ready, setReady] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
 
   const go = useCallback((to: string) => { history.pushState(null, '', to); setPath(location.pathname); }, []);
   useEffect(() => {
@@ -47,13 +49,21 @@ export default function App() {
   const pay = path.match(/^\/payments\/([^/]+)$/);
   const claim = path.match(/^\/claims\/([^/]+)$/);
   const edit = path === '/claims/new' ? ['', ''] : path.match(/^\/claims\/([^/]+)\/edit$/);
+  const items = navFor(user);
+  const active = activeHref(path, items);
   return (
+    <>
+      <header className="topbar" onKeyDown={(e) => { if (e.key === 'Escape') setMenuOpen(false); }}>
+        <span className="topbar__name">ClaimFlow</span>
+        <button type="button" className="topbar__toggle" aria-expanded={menuOpen} aria-controls="main-nav" onClick={() => setMenuOpen((o) => !o)}>Menu</button>
+        <nav id="main-nav" aria-label="Main" className={menuOpen ? 'open' : undefined}>
+          {items.map((i) => <a key={i.href} href={i.href} aria-current={i.href === active ? 'page' : undefined}>{i.label}</a>)}
+          <button type="button" onClick={signOut}>Sign out</button>
+        </nav>
+      </header>
     <main className="wide">
-      <nav aria-label="Main">
-        <a href="/claims">My claims</a> {user.role === 'manager' && <><a href="/approvals">Approvals</a> </>}{user.role === 'finance' && <><a href="/payments">Payments</a> <a href="/policy">Policy</a> <a href="/export">Export</a> </>}<a href={`/users/${user.id}`}>My account</a>
-        <button type="button" onClick={signOut}>Sign out</button>
-      </nav>
       {path === '/claims' ? <ClaimsList /> : path === '/approvals' ? <Approvals /> : path === '/payments' ? <Payments /> : path === '/policy' ? <PolicySettings /> : path === '/export' ? <ExportClaims /> : pay ? <ClaimDetail key={path} id={pay[1]} viewer={user} go={go} back="/payments" /> : review ? <ClaimDetail key={path} id={review[1]} viewer={user} go={go} back="/approvals" /> : edit ? <ClaimEditor key={path} id={edit[1]} go={go} /> : claim && claim[1] !== 'new' ? <ClaimDetail key={path} id={claim[1]} viewer={user} go={go} /> : path === '/users' ? <UsersList /> : detail ? <UserDetail key={detail[1]} id={detail[1]} viewer={user} /> : <p role="alert">Page not found.</p>}
     </main>
+    </>
   );
 }

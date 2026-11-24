@@ -3,6 +3,11 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { WEB, PW, NEW_PW, startStack, stopStack, apiAs, mailLink, phone, clean, ROUTES, visitRoutes } from './stack.helpers.js';
 
+const openMenu = async (page: import('@playwright/test').Page) => {
+  const b = page.getByRole('button', { name: 'Menu' });
+  if ((await b.getAttribute('aria-expanded')) !== 'true') await b.click();
+};
+
 before(startStack);
 after(stopStack);
 
@@ -333,6 +338,7 @@ test('CLAIM-5-S5 approvals inbox: cards, flags, receipts, nav, a11y at 360 px', 
   await page.fill('#password', PW);
   await page.press('#password', 'Enter');
   await page.getByRole('heading', { name: 'My claims' }).waitFor();
+  await openMenu(page);
   await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Approvals' }).click();
   await page.getByRole('heading', { name: 'Approvals' }).waitFor();
   await page.getByRole('link', { name: 'Inbox trip' }).first().waitFor();
@@ -430,6 +436,7 @@ test('CLAIM-6-S6 payments queue: cards, flags, nav, a11y at 360 px', async () =>
   await page.fill('#password', PW);
   await page.press('#password', 'Enter');
   await page.getByRole('heading', { name: 'My claims' }).waitFor();
+  await openMenu(page);
   await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Payments' }).click();
   await page.getByRole('heading', { name: 'Payments', level: 1 }).waitFor();
   await page.getByRole('link', { name: 'Queue trip' }).first().waitFor();
@@ -523,6 +530,7 @@ test('CLAIM-7-S8 policy screen: load, validate, save once, access, a11y at 360 p
   await page.fill('#password', PW);
   await page.press('#password', 'Enter');
   await page.getByRole('heading', { name: 'My claims' }).waitFor();
+  await openMenu(page);
   await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Policy' }).click();
   await page.getByRole('heading', { name: 'Policy settings', level: 1 }).waitFor();
   await page.getByLabel('Meals limit').waitFor();
@@ -567,6 +575,7 @@ test('CLAIM-7-S9 export screen: download, range validity, failure, access, a11y 
   await page.fill('#password', PW);
   await page.press('#password', 'Enter');
   await page.getByRole('heading', { name: 'My claims' }).waitFor();
+  await openMenu(page);
   await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Export' }).click();
   await page.getByRole('heading', { name: 'Export paid claims', level: 1 }).waitFor();
   await page.getByLabel('From').waitFor();
@@ -618,3 +627,27 @@ test('AC-2/3/4 strict axe, no horizontal scroll and one label per input on every
     .map((e) => e.id || e.name));
   assert.deepEqual(bad, [], `${route}: inputs without exactly one visible label`);
 }));
+
+test('360px nav disclosure opens with Enter/Space, closes with Escape, and the page does not scroll sideways', async () => {
+  const page = await phone();
+  await page.goto(WEB + '/sign-in');
+  await page.fill('#email', 'manager@claimflow.test');
+  await page.fill('#password', PW);
+  await page.press('#password', 'Enter');
+  await page.getByRole('heading', { name: 'My claims' }).waitFor();
+  const btn = page.getByRole('button', { name: 'Menu' });
+  const nav = page.getByRole('navigation', { name: 'Main' });
+  assert.equal(await btn.getAttribute('aria-expanded'), 'false');
+  assert.equal(await nav.getByRole('link', { name: 'Approvals' }).isVisible(), false);
+  for (const k of ['Enter', 'Space']) {
+    await btn.focus();
+    await page.keyboard.press(k);
+    assert.equal(await btn.getAttribute('aria-expanded'), 'true', k);
+    await nav.getByRole('link', { name: 'Approvals' }).waitFor();
+    await nav.getByRole('link', { name: 'Approvals' }).focus();
+    await page.keyboard.press('Escape');
+    assert.equal(await btn.getAttribute('aria-expanded'), 'false', k);
+  }
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth));
+  await page.close();
+});
