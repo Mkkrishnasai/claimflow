@@ -24,7 +24,7 @@ const invalid = () => new HttpError(409, 'invalid_transition');
 export const nextStatus = (from: string, action: Action): Status | null => (TRANSITIONS[action].from === from ? TRANSITIONS[action].to : null);
 
 // `set` cannot carry `status`: only moveClaim writes Claim.status.
-export type MoveSet = { approverId?: string | null; submittedAt?: Date | null; updatedAt?: Date; paymentDate?: string; paymentReference?: string };
+export type MoveSet = { approverId?: string | null; submittedAt?: Date | null; updatedAt?: Date; paymentDate?: string; paymentReference?: string; secondApprovalCents?: number | null };
 export interface Move { claimId: string; action: Action; actorId: string; reason?: string | null; now: Date; set?: MoveSet; beforeAppend?: () => void | Promise<void> }
 
 // History row: seq = max + 1, inside the caller's transaction (writes are serialised by withWrite).
