@@ -20,9 +20,9 @@ test('policy routes are listed with data policy', () => {
   assert.deepEqual(policyRouteDefs({} as never).map((d) => [key(d), d.data]), [['GET /policy', 'policy'], ['PATCH /policy', 'policy']]);
 });
 
-test('COVERED names all 19 claim data routes and nothing stale; PUBLIC_ROUTES unchanged', () => {
+test('COVERED names all 20 claim data routes and nothing stale; PUBLIC_ROUTES unchanged', () => {
   const claim = [...claimRouteDefs({} as never), ...receiptUploadDefs({} as never)].filter((d) => d.data === 'claim').map(key);
-  assert.equal(claim.length, 19);
+  assert.equal(claim.length, 20);
   assert.deepEqual(claim.filter((k) => !COVERED.includes(k)), []);
   assert.deepEqual(COVERED.filter((k) => !defs().some((d) => key(d) === k)), []);
   assert.deepEqual([...PUBLIC_ROUTES].sort(), ['GET /auth/csrf', 'POST /auth/forgot-password', 'POST /auth/set-password', 'POST /auth/sign-in']);

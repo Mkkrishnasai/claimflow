@@ -8,6 +8,7 @@ import { approvalsComplete } from './payment.js';
 import { canReadClaim, requireFinance } from '../auth/authz.js';
 import { nearestActiveAbove } from '../users/service.js';
 import { checkActor, decideApproval, rejectAction } from './approval.js';
+import { paidClaimsCsv } from './export.js';
 import { checkSubmit, pickDuplicates, SubmitRefused, utcToday, type Hit } from './policy.js';
 
 export interface ClaimDeps { prisma: PrismaClient; clock: Clock; receipts: ReceiptStore; beforeAppend?: () => void | Promise<void> /* test hook: fail the history insert */ }
@@ -146,6 +147,17 @@ export async function listPayments(d: ClaimDeps, q: { limit?: unknown; offset?: 
     };
   });
   return { count: Number(agg[0].n), totalCents: Number(agg[0].t ?? 0), items };
+}
+
+// E-41 (FR-4): finance only (checked by the caller); two raw queries, whole document built before the first byte.
+export async function exportPaidClaims(d: ClaimDeps, q: { from?: unknown; to?: unknown }) {
+  const from = validDate(q.from), to = validDate(q.to);
+  if (from > to) throw bad('from must not be after to');
+  const [lines, events] = await Promise.all([
+    d.prisma.$queryRaw<{ claimId: string; employee: string; category: string; amountCents: number; paymentDate: string; paymentReference: string }[]>`SELECT c."id" AS claimId, u."name" AS employee, g."label" AS category, l."amountCents" AS amountCents, c."paymentDate" AS paymentDate, c."paymentReference" AS paymentReference FROM "Claim" c JOIN "User" u ON u."id" = c."claimantId" JOIN "ClaimLine" l ON l."claimId" = c."id" JOIN "Category" g ON g."code" = l."categoryCode" WHERE c."status" = 'paid' AND c."paymentDate" >= ${from} AND c."paymentDate" <= ${to} ORDER BY c."paymentDate", c."id", l."position"`,
+    d.prisma.$queryRaw<{ claimId: string; action: string; actorName: string }[]>`SELECT e."claimId" AS claimId, e."action" AS action, a."name" AS actorName FROM "ClaimEvent" e JOIN "Claim" c ON c."id" = e."claimId" JOIN "User" a ON a."id" = e."actorId" WHERE c."status" = 'paid' AND c."paymentDate" >= ${from} AND c."paymentDate" <= ${to} ORDER BY e."claimId", e."seq"`,
+  ]);
+  return { ...paidClaimsCsv(lines, events), from, to };
 }
 
 // E-22. One query (no N+1); 404 before 403 (architecture section 6).
