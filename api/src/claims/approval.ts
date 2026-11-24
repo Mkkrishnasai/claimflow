@@ -5,8 +5,8 @@ export const SECOND_APPROVAL_CENTS = 200_000;
 
 export type Decision = { action: 'approve_first'; approverId: string } | { action: 'approve_final' } | { action: 'approve_second' };
 
-export function decideApproval(status: string, totalCents: number, secondApproverId: string | null): Decision | null {
-  if (status === 'submitted') return totalCents > SECOND_APPROVAL_CENTS && secondApproverId !== null ? { action: 'approve_first', approverId: secondApproverId } : { action: 'approve_final' };
+export function decideApproval(status: string, totalCents: number, secondApproverId: string | null, thresholdCents: number): Decision | null {
+  if (status === 'submitted') return totalCents > thresholdCents && secondApproverId !== null ? { action: 'approve_first', approverId: secondApproverId } : { action: 'approve_final' };
   return status === 'approved' ? { action: 'approve_second' } : null;
 }
 

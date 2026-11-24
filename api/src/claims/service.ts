@@ -7,7 +7,7 @@ import { moveClaim } from './status.js';
 import { approvalsComplete } from './payment.js';
 import { canReadClaim, requireFinance } from '../auth/authz.js';
 import { nearestActiveAbove } from '../users/service.js';
-import { checkActor, decideApproval, rejectAction } from './approval.js';
+import { checkActor, decideApproval, rejectAction, SECOND_APPROVAL_CENTS } from './approval.js';
 import { paidClaimsCsv } from './export.js';
 import { checkSubmit, pickDuplicates, SubmitRefused, utcToday, type Hit } from './policy.js';
 
@@ -350,7 +350,7 @@ export const withdrawClaim = (d: ClaimDeps, user: User, id: string, body: Record
 
 // E-34 / E-35. 404, then checkActor (403 self_approval / forbidden, 409); shared by approve and reject.
 async function loadActor(tx: Tx, user: User, id: string) {
-  const c = await tx.claim.findUnique({ where: { id }, select: { id: true, claimantId: true, status: true, approverId: true, lines: { select: { amountCents: true } } } });
+  const c = await tx.claim.findUnique({ where: { id }, select: { id: true, claimantId: true, status: true, approverId: true, secondApprovalCents: true, lines: { select: { amountCents: true } } } });
   if (!c) throw new HttpError(404, 'not_found');
   const me = user!.id;
   const firstApproverId = c.status === 'approved' ? ((await tx.claimEvent.findFirst({ where: { claimId: id, action: 'approve_first' }, orderBy: { seq: 'desc' }, select: { actorId: true } }))?.actorId ?? null) : null;
@@ -365,7 +365,7 @@ export const approveClaim = (d: ClaimDeps, user: User, id: string) => withWrite(
   const { c, me, firstApproverId } = await loadActor(tx, user, id);
   if (c.status === 'approved' && firstApproverId === me) throw new HttpError(403, 'forbidden');
   const second = c.status === 'submitted' ? await nearestActiveAbove(tx, me) : null;
-  const decision = decideApproval(c.status, c.lines.reduce((s, l) => s + l.amountCents, 0), second);
+  const decision = decideApproval(c.status, c.lines.reduce((s, l) => s + l.amountCents, 0), second, c.secondApprovalCents ?? SECOND_APPROVAL_CENTS);
   if (!decision) throw new HttpError(409, 'invalid_transition');
   if (decision.action === 'approve_first' && (second === me || second === c.claimantId)) throw new HttpError(403, 'forbidden');
   const now = d.clock();
