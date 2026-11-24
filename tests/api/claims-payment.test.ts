@@ -6,11 +6,13 @@ import bcrypt from 'bcryptjs';
 import { PrismaClient } from '@prisma/client';
 import { createApp } from '../../api/src/app.js';
 import { createLogger } from '../../api/src/logger.js';
+import { payClaim } from '../../api/src/claims/service.js';
 
 const PW = 'correct horse battery';
 const prisma = new PrismaClient();
 let srv: Server, base: string;
 let tick = 0;
+const logs: string[] = [];
 const GUARDS = ['claim_event_no_delete', 'claim_paid_no_delete', 'line_paid_del', 'receipt_paid_del'];
 const wipe = async () => {
   const g = await prisma.$queryRawUnsafe<{ name: string; sql: string }[]>(`SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND name IN (${GUARDS.map((n) => `'${n}'`).join(',')})`);
@@ -27,7 +29,7 @@ const seed = async () => {
 };
 before(async () => {
   await seed();
-  srv = createApp({ log: createLogger({ write: () => true }), deps: { prisma, clock: () => new Date(), mailer: {} as never, publicBaseUrl: 'http://app.test' } }).listen(0, '127.0.0.1');
+  srv = createApp({ log: createLogger({ write: (l: string) => { logs.push(l); return true; } }), deps: { prisma, clock: () => new Date(), mailer: {} as never, publicBaseUrl: 'http://app.test' } }).listen(0, '127.0.0.1');
   await new Promise((r) => srv.once('listening', r));
   base = `http://127.0.0.1:${(srv.address() as AddressInfo).port}`;
 });
@@ -109,4 +111,100 @@ test('AC-5 over-limit and duplicate flags counted; empty queue is zero', async (
   const by = (id: string) => j.items.find((i: J) => i.id === id);
   assert.equal(by(over.id).overLimitCount, 1); assert.equal(by(over.id).duplicateCount, 0);
   assert.equal(by(dup.id).duplicateCount, 1); assert.equal(by(dup.id).overLimitCount, 0);
+});
+
+// ---- CLAIM-6-S3: pay ----
+const TODAY = new Date().toISOString().slice(0, 10);
+const OK = { paymentDate: '2026-01-15', reference: 'INV-0042' };
+type H = Record<string, string>;
+const login = async (who: string, csrf = true): Promise<H> => {
+  let h: H = { 'content-type': 'application/json' };
+  {
+    const pre = await fetch(`${base}/api/auth/csrf`);
+    const token = ((await pre.json()) as { csrfToken: string }).csrfToken;
+    const r = await fetch(`${base}/api/auth/sign-in`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-csrf-token': token, cookie: pre.headers.getSetCookie()[0].split(';')[0] }, body: JSON.stringify({ email: `${who}@claimflow.test`, password: PW }) });
+    h = { ...h, cookie: r.headers.getSetCookie().find((c) => c.startsWith('sid='))!.split(';')[0], ...(csrf ? { 'x-csrf-token': ((await r.json()) as J).csrfToken } : {}) };
+  }
+  return h;
+};
+const payAs = (h: H, id: string, body: unknown = OK) => fetch(`${base}/api/claims/${id}/pay`, { method: 'POST', headers: h, body: JSON.stringify(body) });
+const pay = async (who: string | null, id: string, body: unknown = OK, csrf = true) => payAs(who ? await login(who, csrf) : { 'content-type': 'application/json' }, id, body);
+const events = (id: string) => prisma.claimEvent.findMany({ where: { claimId: id } });
+const row = (id: string) => prisma.claim.findUniqueOrThrow({ where: { id } });
+
+test('S3 AC-1 finance pays: 200, payment set, one pay history row, same payment on GET', async () => {
+  const c = await mk('ready_to_pay');
+  const r = await pay('fin', c.id);
+  assert.equal(r.status, 200);
+  const j = (await r.json()) as J;
+  assert.equal(j.status, 'paid'); assert.deepEqual(j.payment, { date: '2026-01-15', reference: 'INV-0042' });
+  const ev = await events(c.id);
+  assert.deepEqual(ev.map((e) => [e.action, e.actorId]), [['pay', 'fin']]);
+  const g = await fetch(`${base}/api/claims/${c.id}`, { headers: { cookie: await signIn('fin') } });
+  assert.deepEqual(((await g.json()) as J).payment, j.payment);
+  const u = await mk('submitted');
+  assert.equal(((await (await fetch(`${base}/api/claims/${u.id}`, { headers: { cookie: await signIn('fin') } })).json()) as J).payment, null);
+});
+
+test('S3 AC-2 bad input is 422 and changes nothing; old date and today accepted', async () => {
+  const c = await mk('ready_to_pay');
+  const bads: unknown[] = [
+    { paymentDate: '2026-01-15' }, { ...OK, reference: '' }, { ...OK, reference: '   ' }, { ...OK, reference: 'x'.repeat(101) },
+    { ...OK, paymentDate: '2026-13-40' }, { ...OK, paymentDate: 20260115 }, { reference: 'R' }, { ...OK, paymentDate: '2999-01-01' }, { ...OK, paymentDate: '2026-02-30' },
+  ];
+  for (const b of bads) {
+    const r = await pay('fin', c.id, b);
+    assert.equal(r.status, 422, JSON.stringify(b)); assert.equal(((await r.json()) as J).error, 'invalid_input');
+  }
+  assert.equal((await row(c.id)).status, 'ready_to_pay'); assert.equal((await events(c.id)).length, 0);
+  assert.equal((await pay('fin', c.id, { paymentDate: TODAY, reference: 'R'.repeat(100) })).status, 200);
+});
+
+test('S3 AC-3 wrong role 403, unknown 404 first, wrong status 409; 0 rows changed', async () => {
+  const c = await mk('ready_to_pay');
+  for (const who of ['emp', 'mgr', 'adm']) { const r = await pay(who, c.id); assert.equal(r.status, 403); assert.deepEqual(await r.json(), { error: 'forbidden' }); }
+  assert.equal((await pay('emp', 'nope')).status, 404);
+  assert.equal((await pay('fin', 'nope')).status, 404);
+  for (const s of ['draft', 'submitted', 'approved', 'rejected']) {
+    const x = await mk(s); const r = await pay('fin', x.id);
+    assert.equal(r.status, 409, s); assert.equal(((await r.json()) as J).error, 'invalid_transition');
+    assert.equal((await row(x.id)).paymentReference, null);
+  }
+  assert.equal((await row(c.id)).status, 'ready_to_pay'); assert.equal((await events(c.id)).length, 0);
+});
+
+test('S3 AC-4 failed history insert rolls back; extra body keys ignored', async () => {
+  const c = await mk('ready_to_pay');
+  const deps = { prisma, clock: () => new Date(), receipts: {} as never, beforeAppend: () => { throw new Error('boom'); } };
+  await assert.rejects(payClaim(deps, { id: 'fin', role: 'finance' }, c.id, OK), /boom/);
+  const r = await row(c.id);
+  assert.deepEqual([r.status, r.paymentDate, r.paymentReference], ['ready_to_pay', null, null]); assert.equal((await events(c.id)).length, 0);
+  const res = await pay('fin', c.id, { ...OK, status: 'rejected', claimantId: 'adm', amountCents: 1 });
+  assert.equal(res.status, 200);
+  const after = await row(c.id);
+  assert.deepEqual([after.status, after.claimantId, after.paymentDate, after.paymentReference], ['paid', 'emp', '2026-01-15', 'INV-0042']);
+  assert.equal((await prisma.claimLine.findFirstOrThrow({ where: { claimId: c.id } })).amountCents, 1000);
+});
+
+test('S3 AC-5 two simultaneous pays: one 200, one 409, one pay row', async () => {
+  const c = await mk('ready_to_pay');
+  const h = await login('fin');
+  const rs = await Promise.all([payAs(h, c.id), payAs(h, c.id)]);
+  assert.deepEqual(rs.map((r) => r.status).sort(), [200, 409]);
+  assert.equal((await events(c.id)).filter((e) => e.action === 'pay').length, 1);
+});
+
+test('S3 AC-6 log line has pay fields only; reference never logged or echoed; CSRF 403', async () => {
+  const c = await mk('ready_to_pay');
+  logs.length = 0;
+  const bad = await pay('fin', c.id, { paymentDate: 'bad', reference: 'SECRET-REF-123' });
+  assert.equal(bad.status, 422); assert.ok(!(await bad.text()).includes('SECRET-REF-123'));
+  assert.equal((await pay('fin', c.id, { paymentDate: '2026-01-15', reference: 'SECRET-REF-123' })).status, 200);
+  assert.ok(!logs.join('').includes('SECRET-REF-123'));
+  const ev = logs.map((l) => JSON.parse(l)).filter((l) => l.claimEvent === 'pay');
+  assert.equal(ev.length, 1);
+  assert.deepEqual([ev[0].claimId, ev[0].from, ev[0].to], [c.id, 'ready_to_pay', 'paid']);
+  const d = await mk('ready_to_pay');
+  const r = await pay('fin', d.id, OK, false);
+  assert.equal(r.status, 403); assert.deepEqual(await r.json(), { error: 'csrf' });
 });
