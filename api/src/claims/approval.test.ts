@@ -2,12 +2,18 @@ import { expect, test } from 'vitest';
 import { checkActor, decideApproval, rejectAction } from './approval.js';
 
 test('decideApproval at the threshold, with and without a second approver', () => {
-  expect(decideApproval('submitted', 200_000, 'S')).toEqual({ action: 'approve_final' });
-  expect(decideApproval('submitted', 200_001, 'S')).toEqual({ action: 'approve_first', approverId: 'S' });
-  expect(decideApproval('submitted', 200_001, null)).toEqual({ action: 'approve_final' });
-  expect(decideApproval('submitted', 1, null)).toEqual({ action: 'approve_final' });
-  expect(decideApproval('approved', 999_999, null)).toEqual({ action: 'approve_second' });
-  for (const s of ['draft', 'rejected', 'ready_to_pay', 'paid']) expect(decideApproval(s, 1, 'S')).toBeNull();
+  expect(decideApproval('submitted', 200_000, 'S', 200_000)).toEqual({ action: 'approve_final' });
+  expect(decideApproval('submitted', 200_001, 'S', 200_000)).toEqual({ action: 'approve_first', approverId: 'S' });
+  expect(decideApproval('submitted', 200_001, null, 200_000)).toEqual({ action: 'approve_final' });
+  expect(decideApproval('submitted', 1, null, 200_000)).toEqual({ action: 'approve_final' });
+  expect(decideApproval('approved', 999_999, null, 200_000)).toEqual({ action: 'approve_second' });
+  for (const s of ['draft', 'rejected', 'ready_to_pay', 'paid']) expect(decideApproval(s, 1, 'S', 200_000)).toBeNull();
+});
+
+test('decideApproval uses the threshold it is given', () => {
+  expect(decideApproval('submitted', 220_000, 'S', 250_000)).toEqual({ action: 'approve_final' });
+  expect(decideApproval('submitted', 250_001, 'S', 250_000)).toEqual({ action: 'approve_first', approverId: 'S' });
+  expect(decideApproval('submitted', 220_000, 'S', 200_000)).toEqual({ action: 'approve_first', approverId: 'S' });
 });
 
 test('rejectAction', () => {
