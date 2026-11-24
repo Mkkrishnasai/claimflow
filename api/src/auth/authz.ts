@@ -32,7 +32,7 @@ export const isManagerRole = (role: string): boolean => role === 'manager'; // Q
 export interface RouteDef {
   method: 'get' | 'post' | 'patch' | 'delete';
   path: string;
-  data: 'none' | 'claim' | 'user';
+  data: 'none' | 'claim' | 'user' | 'policy';
   write: boolean;
   handler: RequestHandler;
 }
