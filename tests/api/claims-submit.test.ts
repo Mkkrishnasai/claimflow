@@ -59,7 +59,7 @@ type J = Record<string, any>;
 let n = 0;
 const mk = async (status: string, claimantId = 'emp', lines = 1) => { // lines first: the paid triggers refuse lines on a paid claim
   const c = await prisma.claim.create({ data: { id: `c${++n}`, claimantId, title: 'Secret title', purpose: 'Secret purpose text', status: 'draft', createdAt: new Date(0), updatedAt: new Date(0), lines: { create: Array.from({ length: lines }, (_, i) => ({ position: i + 1, date: '2025-12-25', categoryCode: 'meals', amountCents: 1000, description: 'x' })) } } });
-  return status === 'draft' ? c : prisma.claim.update({ where: { id: c.id }, data: { status: status as never } });
+  return status === 'draft' ? c : prisma.claim.update({ where: { id: c.id }, data: { status: status as never, ...(status === 'paid' ? { paymentDate: '2026-11-24', paymentReference: 'INV-0042' } : {}) } });
 };
 const events = (claimId: string) => prisma.claimEvent.findMany({ where: { claimId } });
 const mkc = async (lines: Record<string, unknown>[], o: Record<string, unknown> = {}, claimantId = 'emp') => {
