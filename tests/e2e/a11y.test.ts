@@ -369,3 +369,98 @@ test('CLAIM-4-S5 failures list, flags and justification field at 360 px', async 
   assert.equal(await page.getByRole('link', { name: 'View earlier claim' }).getAttribute('href'), `/claims/${first}`);
   await clean(page, 'detail with flag', true);
 });
+
+test('CLAIM-5-S5 approvals inbox: cards, flags, receipts, nav, a11y at 360 px', async () => {
+  const s = await apiAs('employee@claimflow.test', PW);
+  const h = { 'content-type': 'application/json', 'x-csrf-token': s.csrf, cookie: s.cookie };
+  const cat = ((await (await fetch(`${WEB}/api/categories`, { headers: { cookie: s.cookie } })).json()) as { code: string; limitCents: number }[])[0];
+  const today = new Date().toISOString().slice(0, 10);
+  const line = (amountCents: number) => ({ date: today, categoryCode: cat.code, amountCents, description: 'Inbox taxi', justification: 'Client dinner with the whole team' });
+  const mk = async (lines: unknown[]) => (await (await fetch(`${WEB}/api/claims`, { method: 'POST', headers: h, body: JSON.stringify({ title: 'Inbox trip', purpose: 'Client workshop in Berlin', lines }) })).json()) as { id: string; lines: { id: string }[] };
+  const first = await mk([line(137)]);
+  const second = await mk([line(137), line(cat.limitCents + 1)]);
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64');
+  const up = await fetch(`${WEB}/api/claims/${second.id}/lines/${second.lines[1].id}/receipts`, { method: 'POST', headers: { 'x-csrf-token': s.csrf, cookie: s.cookie, 'x-filename': 'r.png', 'content-type': 'image/png' }, body: png });
+  const receipt = ((await up.json()) as { id: string }).id;
+  for (const c of [first.id, second.id]) assert.equal((await fetch(`${WEB}/api/claims/${c}/submit`, { method: 'POST', headers: h })).status, 200);
+
+  const page = await phone();
+  await page.goto(WEB + '/sign-in');
+  await page.fill('#email', 'manager@claimflow.test');
+  await page.fill('#password', PW);
+  await page.press('#password', 'Enter');
+  await page.getByRole('heading', { name: 'My claims' }).waitFor();
+  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Approvals' }).click();
+  await page.getByRole('heading', { name: 'Approvals' }).waitFor();
+  await page.getByRole('link', { name: 'Inbox trip' }).first().waitFor();
+  assert.equal(await page.evaluate(() => document.activeElement?.tagName), 'H1');
+  const card = page.locator('ul.cards > li').filter({ has: page.locator(`a[href="/approvals/${second.id}"]`) });
+  await card.getByText('Over limit (1)').waitFor();
+  await card.getByText('Possible duplicate (1)').waitFor();
+  await card.getByText('First approval').waitFor();
+  await card.getByText('Employee', { exact: true }).waitFor();
+  assert.equal(await card.getByRole('link', { name: /^Receipt/ }).getAttribute('href'), `/api/claims/${second.id}/receipts/${receipt}`);
+  const plain = page.locator('ul.cards > li').filter({ has: page.locator(`a[href="/approvals/${first.id}"]`) });
+  assert.equal(await plain.getByText(/Over limit|Possible duplicate/).count(), 0);
+  await clean(page, '/approvals', true);
+
+  // nav link: managers only
+  const emp = await phone();
+  await emp.goto(WEB + '/sign-in');
+  await emp.fill('#email', 'employee@claimflow.test');
+  await emp.fill('#password', PW);
+  await emp.press('#password', 'Enter');
+  await emp.getByRole('heading', { name: 'My claims' }).waitFor();
+  assert.equal(await emp.getByRole('link', { name: 'Approvals' }).count(), 0);
+});
+
+test('CLAIM-5-S6 review screen: read-only, reject error focus, approve, a11y at 360 px', async () => {
+  const s = await apiAs('employee@claimflow.test', PW);
+  const h = { 'content-type': 'application/json', 'x-csrf-token': s.csrf, cookie: s.cookie };
+  const cat = ((await (await fetch(`${WEB}/api/categories`, { headers: { cookie: s.cookie } })).json()) as { code: string; limitCents: number }[])[0];
+  const today = new Date().toISOString().slice(0, 10);
+  const line = (amountCents: number) => ({ date: today, categoryCode: cat.code, amountCents, description: 'Review taxi', justification: 'Client dinner with the whole team' });
+  const made = (await (await fetch(`${WEB}/api/claims`, { method: 'POST', headers: h, body: JSON.stringify({ title: 'Review trip', purpose: 'Client workshop in Berlin', lines: [line(cat.limitCents + 1)] }) })).json()) as { id: string; lines: { id: string }[] };
+  const id = made.id;
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64');
+  await fetch(`${WEB}/api/claims/${id}/lines/${made.lines[0].id}/receipts`, { method: 'POST', headers: { 'x-csrf-token': s.csrf, cookie: s.cookie, 'x-filename': 'r.png', 'content-type': 'image/png' }, body: png });
+  assert.equal((await fetch(`${WEB}/api/claims/${id}/submit`, { method: 'POST', headers: h })).status, 200);
+
+  const page = await phone();
+  await page.goto(WEB + '/sign-in');
+  await page.fill('#email', 'manager@claimflow.test');
+  await page.fill('#password', PW);
+  await page.press('#password', 'Enter');
+  await page.getByRole('heading', { name: 'My claims' }).waitFor();
+  await page.goto(`${WEB}/approvals/${id}`);
+  await page.getByRole('heading', { name: 'Review trip' }).waitFor();
+  assert.equal(await page.evaluate(() => document.activeElement?.tagName), 'H1');
+  await page.getByText('Over limit').first().waitFor();
+  await page.getByText('Client dinner with the whole team').waitFor();
+  await page.getByRole('link', { name: 'Back to approvals' }).waitFor();
+  assert.equal(await page.locator('input, select').count(), 0);
+  assert.equal(await page.locator('textarea').count(), 1);
+
+  await page.getByLabel('Reason for rejection').fill('short');
+  await page.getByRole('button', { name: 'Reject' }).click();
+  await page.getByRole('alert').waitFor();
+  assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('role')), 'alert');
+  await page.getByText('submitted', { exact: true }).waitFor();
+  await clean(page, 'review with flag and error', true);
+
+  await page.getByLabel('Reason for rejection').fill('Receipt does not match the amount');
+  await page.getByRole('button', { name: 'Reject' }).click();
+  await page.getByText('rejected', { exact: true }).waitFor();
+  assert.equal(await page.getByRole('button', { name: 'Approve' }).count(), 0);
+
+  // the claimant sees no decision controls
+  const emp = await phone();
+  await emp.goto(WEB + '/sign-in');
+  await emp.fill('#email', 'employee@claimflow.test');
+  await emp.fill('#password', PW);
+  await emp.press('#password', 'Enter');
+  await emp.getByRole('heading', { name: 'My claims' }).waitFor();
+  await emp.goto(`${WEB}/approvals/${id}`);
+  await emp.getByRole('heading', { name: 'Review trip' }).waitFor();
+  assert.equal(await emp.getByRole('button', { name: /Approve|Reject/ }).count(), 0);
+});

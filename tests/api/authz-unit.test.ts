@@ -26,6 +26,14 @@ test('canReadClaim: AC-10 table, every role x relationship', () => {
   assert.equal(cell('finance', 'f', 'c0', 'draft'), false);
 });
 
+test('canReadClaim: current approver reads at any depth; others unchanged', () => {
+  const ref = (approverId: string | null) => ({ claimantId: 'c0', status: 'submitted', approverId });
+  assert.equal(canReadClaim({ id: 'd3', role: 'manager' }, ref('d3'), mgrOf), true);
+  assert.equal(canReadClaim({ id: 'd3', role: 'manager' }, ref('d2'), mgrOf), false);
+  assert.equal(canReadClaim({ id: 'd3', role: 'manager' }, ref(null), mgrOf), false);
+  assert.equal(canReadClaim({ id: 'x', role: 'employee' }, ref('d3'), mgrOf), false);
+});
+
 test('canReadUser and requireAdmin', () => {
   for (const r of ROLES) {
     assert.equal(canReadUser({ id: 'x', role: r }, 'x'), true);
