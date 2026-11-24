@@ -1,0 +1,10 @@
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body, h1, h2, h3, p, ul, ol, dl, dd, fieldset, figure { margin: 0; }
+ul, ol { padding: 0; }
+img, svg { display: block; max-width: 100%; }
+input, button, select, textarea { font: inherit; color: inherit; }
+table { border-collapse: collapse; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition: none !important; animation: none !important; }
+}
