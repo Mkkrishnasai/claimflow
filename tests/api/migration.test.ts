@@ -89,3 +89,29 @@ test('policy migration: seed, bounds, permanent row, frozen paid claim, additive
   run(`INSERT INTO "Claim" (id,claimantId,title,purpose,status,createdAt,updatedAt,paymentDate,paymentReference) VALUES ('c','u','t','p','paid','2026-01-01','2026-01-01','2026-01-02','R1')`);
   assert.notEqual(run(`UPDATE "Claim" SET paymentReference='R2' WHERE id='c'`).status, 0);
 });
+
+test('notifications migration: empty table, unique dedupeKey, no content columns, additive SQL, triggers intact', () => {
+  const dir = readdirSync(join(root, 'prisma/migrations')).find((d) => d.endsWith('_notifications'))!;
+  assert.doesNotMatch(readFileSync(join(root, 'prisma/migrations', dir, 'migration.sql'), 'utf8'), /RedefineTables|DROP/);
+  const db = join(mkdtempSync(join(tmpdir(), 'mig4-')), 'n.db');
+  const e = { ...env, DATABASE_URL: `file:${db}` };
+  assert.equal(spawnSync(join(root, 'node_modules/.bin/prisma'), ['migrate', 'deploy'], { cwd: root, env: e, encoding: 'utf8' }).status, 0);
+  const run = (s: string) => spawnSync('sqlite3', ['-json', db, s], { encoding: 'utf8' });
+  const q = (s: string) => JSON.parse(run(s).stdout || '[]');
+  assert.equal(q('SELECT count(*) AS n FROM "Notification"')[0].n, 0);
+  assert.equal(q(`SELECT name FROM sqlite_master WHERE type = 'trigger'`).length, 15);
+
+  const ins = `INSERT INTO "Notification" (id,kind,userId,dedupeKey,nextAttemptAt) VALUES ('%ID%','digest','u1','digest:u1:2026-11-25','2026-11-25')`;
+  assert.equal(run(ins.replace('%ID%', 'a')).status, 0);
+  const dup = run(ins.replace('%ID%', 'b'));
+  assert.notEqual(dup.status, 0);
+  assert.match(dup.stderr, /UNIQUE constraint failed/);
+  assert.deepEqual(q(`SELECT status, attempts FROM "Notification"`), [{ status: 'pending', attempts: 0 }]);
+
+  assert.deepEqual(q(`SELECT name FROM pragma_table_info('Notification') ORDER BY cid`).map((r: { name: string }) => r.name),
+    ['id', 'kind', 'userId', 'claimId', 'eventSeq', 'dedupeKey', 'status', 'attempts', 'createdAt', 'nextAttemptAt', 'sentAt']);
+
+  run(`INSERT INTO "User" (id,email,passwordHash,role) VALUES ('u','u@x','h','employee')`);
+  run(`INSERT INTO "Claim" (id,claimantId,title,purpose,status,createdAt,updatedAt,paymentDate,paymentReference) VALUES ('c','u','t','p','paid','2026-01-01','2026-01-01','2026-01-02','R1')`);
+  assert.notEqual(run(`UPDATE "Claim" SET paymentReference='R2' WHERE id='c'`).status, 0);
+});
