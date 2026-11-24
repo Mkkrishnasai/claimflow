@@ -180,7 +180,7 @@ test('approve AC-5 separation of duties and state errors', async () => {
     assert.deepEqual([st, res.status, await code(res)], [st, 409, 'invalid_transition']);
   }
   const paid = await mkc('E', 'ready_to_pay', 'M', [100]); // a paid claim refuses line inserts, so move it after
-  await prisma.claim.update({ where: { id: paid.id }, data: { status: 'paid' } });
+  await prisma.claim.update({ where: { id: paid.id }, data: { status: 'paid', paymentDate: '2026-11-24', paymentReference: 'INV-0042' } });
   const res = await post('M', paid.id);
   assert.deepEqual([res.status, await code(res)], [409, 'claim_paid']);
 });

@@ -59,10 +59,10 @@ type J = Record<string, any>;
 let n = 0;
 const mk = async (status: string, claimantId = 'emp', lines = 1) => { // lines first: the paid triggers refuse lines on a paid claim
   const c = await prisma.claim.create({ data: { id: `c${++n}`, claimantId, title: 'Secret title', purpose: 'Secret purpose text', status: 'draft', createdAt: new Date(0), updatedAt: new Date(0), lines: { create: Array.from({ length: lines }, (_, i) => ({ position: i + 1, date: '2025-12-25', categoryCode: 'meals', amountCents: 1000, description: 'x' })) } } });
-  return status === 'draft' ? c : prisma.claim.update({ where: { id: c.id }, data: { status: status as never } });
+  return status === 'draft' ? c : prisma.claim.update({ where: { id: c.id }, data: { status: status as never, ...(status === 'paid' ? { paymentDate: '2026-11-24', paymentReference: 'INV-0042' } : {}) } });
 };
 const events = (claimId: string) => prisma.claimEvent.findMany({ where: { claimId }, orderBy: { seq: 'asc' } });
-const move = (claimId: string, action: (typeof ACTIONS)[number], reason?: string) => withWrite(prisma, (tx) => moveClaim(tx, { claimId, action, actorId: 'emp', reason, now: new Date(0) }));
+const move = (claimId: string, action: (typeof ACTIONS)[number], reason?: string) => withWrite(prisma, (tx) => moveClaim(tx, { claimId, action, actorId: 'emp', reason, now: new Date(0), ...(action === 'pay' ? { set: { paymentDate: '2026-11-24', paymentReference: 'INV-0042' } } : {}) }));
 
 test('AC-1 all 60 action x status combinations: exactly the table rows succeed, 50 give 409 with 0 rows changed', async () => {
   let ok = 0;
@@ -188,4 +188,11 @@ test('AC-8 20 claims moved concurrently keep seq gapless; a failed insert rolls 
   const sc = await mk('submitted');
   await assert.rejects(withdrawClaim(deps, { id: 'emp', role: 'employee' }, sc.id, {}), /boom/);
   assert.equal((await prisma.claim.findUniqueOrThrow({ where: { id: sc.id } })).status, 'submitted');
+});
+
+test('CLAIM-6 S1 AC-4 pay stores payment fields from set', async () => {
+  const c = await mk('ready_to_pay');
+  await move(c.id, 'pay');
+  const r = await prisma.claim.findUniqueOrThrow({ where: { id: c.id } });
+  assert.deepEqual([r.status, r.paymentDate, r.paymentReference], ['paid', '2026-11-24', 'INV-0042']);
 });

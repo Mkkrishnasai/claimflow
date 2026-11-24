@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { cpSync, mkdtempSync, readdirSync, rmSync, mkdirSync } from 'node:fs';
+import { cpSync, mkdtempSync, readdirSync, readFileSync, rmSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -42,4 +42,19 @@ test('accounts migration upgrades 5 seeded users without loss', () => {
   });
   assert.equal(tables.length, 3);
   rmSync(tmp, { recursive: true, force: true });
+});
+
+test('payment migration: columns, index, 11 triggers, additive SQL', () => {
+  const dir = readdirSync(join(root, 'prisma/migrations')).find((d) => d.endsWith('_payment'))!;
+  assert.doesNotMatch(readFileSync(join(root, 'prisma/migrations', dir, 'migration.sql'), 'utf8'), /RedefineTables|DROP TABLE "Claim"/);
+  const db = join(mkdtempSync(join(tmpdir(), 'mig2-')), 'p.db');
+  const e = { ...env, DATABASE_URL: `file:${db}` };
+  assert.equal(spawnSync(join(root, 'node_modules/.bin/prisma'), ['migrate', 'deploy'], { cwd: root, env: e, encoding: 'utf8' }).status, 0);
+  const q = (s: string) => spawnSync('sqlite3', ['-json', db, s], { encoding: 'utf8' }).stdout;
+  const cols = JSON.parse(q(`SELECT name FROM pragma_table_info('Claim')`)).map((r: { name: string }) => r.name);
+  assert.ok(cols.includes('paymentDate') && cols.includes('paymentReference'));
+  assert.equal(JSON.parse(q(`SELECT name FROM sqlite_master WHERE name = 'Claim_status_updatedAt_idx'`)).length, 1);
+  const trg = JSON.parse(q(`SELECT name FROM sqlite_master WHERE type = 'trigger'`)).map((r: { name: string }) => r.name);
+  assert.equal(trg.length, 11);
+  assert.ok(trg.includes('claim_paid_needs_payment'));
 });

@@ -102,40 +102,43 @@ model Category {
 }
 
 model Claim {
-  id          String       @id @default(uuid())
-  claimantId  String
-  claimant    User         @relation("Claimant", fields: [claimantId], references: [id], onDelete: Restrict)
-  title       String
-  purpose     String
-  status      ClaimStatus  @default(draft)
-  approverId  String?
-  approver    User?        @relation("Approver", fields: [approverId], references: [id], onDelete: Restrict)
-  createdAt   DateTime
-  updatedAt   DateTime
-  submittedAt DateTime?
-  lines       ClaimLine[]
-  events      ClaimEvent[]
-  receipts    Receipt[]
+  id               String       @id @default(uuid())
+  claimantId       String
+  claimant         User         @relation("Claimant", fields: [claimantId], references: [id], onDelete: Restrict)
+  title            String
+  purpose          String
+  status           ClaimStatus  @default(draft)
+  approverId       String?
+  approver         User?        @relation("Approver", fields: [approverId], references: [id], onDelete: Restrict)
+  createdAt        DateTime
+  updatedAt        DateTime
+  submittedAt      DateTime?
+  paymentDate      String?
+  paymentReference String?
+  lines            ClaimLine[]
+  events           ClaimEvent[]
+  receipts         Receipt[]
 
   @@index([claimantId, updatedAt])
   @@index([approverId, status])
+  @@index([status, updatedAt])
 }
 
 model ClaimLine {
-  id           String    @id @default(uuid())
-  claimId      String
-  claim        Claim     @relation(fields: [claimId], references: [id], onDelete: Restrict)
-  position     Int
-  date         String
-  categoryCode String
-  category     Category  @relation(fields: [categoryCode], references: [code], onDelete: Restrict)
-  amountCents  Int
-  description  String
-  limitCents   Int?
+  id               String    @id @default(uuid())
+  claimId          String
+  claim            Claim     @relation(fields: [claimId], references: [id], onDelete: Restrict)
+  position         Int
+  date             String
+  categoryCode     String
+  category         Category  @relation(fields: [categoryCode], references: [code], onDelete: Restrict)
+  amountCents      Int
+  description      String
+  limitCents       Int?
   justification    String?
   duplicateClaimId String?
   duplicateBasis   String?
-  receipts     Receipt[]
+  receipts         Receipt[]
 
   @@unique([claimId, position])
   @@unique([id, claimId])
