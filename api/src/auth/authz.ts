@@ -22,6 +22,10 @@ export function requireAdmin(u: Requester | undefined): void {
   if (u?.role !== 'admin') throw new HttpError(403, 'forbidden');
 }
 
+export function requireFinance(u: Requester | undefined): void {
+  if (u?.role !== 'finance') throw new HttpError(403, 'forbidden');
+}
+
 export const isManagerRole = (role: string): boolean => role === 'manager'; // Q-13 hierarchy rule
 
 // ADR-19: declarative route tables, so tests can enumerate every route and its data class.
