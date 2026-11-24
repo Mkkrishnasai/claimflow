@@ -24,6 +24,18 @@ a:hover { color: var(--primary-hover); }
 nav a { display: inline-block; padding: var(--space-1); min-height: var(--target); }
 nav a[aria-current='page'] { background: var(--primary-soft); color: var(--text); border-bottom: 2px solid var(--accent); }
 nav button { margin-top: 0; }
+.topbar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1); padding: var(--space-1) var(--space-2); color: var(--topbar-text); background: var(--topbar); }
+.topbar a { color: var(--topbar-text); }
+.topbar a[aria-current='page'] { background: transparent; color: var(--topbar-text); border-bottom-color: var(--topbar-text); }
+.topbar :focus-visible { outline-color: var(--topbar-text); }
+.topbar__name { font-weight: var(--fw-title); margin-right: auto; }
+.topbar__toggle { display: none; margin-top: 0; }
+@media (max-width: 600px) {
+  .topbar__toggle { display: inline-block; }
+  .topbar nav { display: none; flex-basis: 100%; }
+  .topbar nav.open { display: block; }
+  .topbar nav a { display: block; }
+}
 a.button, label.button, button.button { display: inline-block; margin-top: var(--space-2); padding: var(--space-1) var(--space-2); min-height: var(--target); min-width: var(--target); font-weight: var(--fw-body); color: var(--on-primary); background: var(--primary); border-radius: var(--radius-btn); text-decoration: none; cursor: pointer; }
 a.button:hover, label.button:hover { background: var(--primary-hover); color: var(--on-primary); }
 label.button input { position: absolute; width: 1px; height: 1px; opacity: 0; overflow: hidden; }
