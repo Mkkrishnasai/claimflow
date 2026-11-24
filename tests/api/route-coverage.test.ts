@@ -17,7 +17,7 @@ test('matrix covers every RouteDef with data !== none', () => {
 });
 
 test('policy routes are listed with data policy', () => {
-  assert.deepEqual(policyRouteDefs({} as never).map((d) => [key(d), d.data]), [['GET /policy', 'policy']]);
+  assert.deepEqual(policyRouteDefs({} as never).map((d) => [key(d), d.data]), [['GET /policy', 'policy'], ['PATCH /policy', 'policy']]);
 });
 
 test('COVERED names all 19 claim data routes and nothing stale; PUBLIC_ROUTES unchanged', () => {
