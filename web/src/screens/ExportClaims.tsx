@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { api, ApiError } from '../api';
+import { Alert, Button, DateField, PageHeader } from '../ui/components';
 
 const URL_ = '/api/exports/paid-claims.csv';
 
@@ -49,13 +50,13 @@ export default function ExportClaims() {
 
   return (
     <section>
-      <h1 tabIndex={-1}>Export paid claims</h1>
-      {error && <p role="alert" className="error">{error}</p>}
+      <PageHeader title="Export paid claims" />
+      {error && <Alert>{error}</Alert>}
       {allowed && (
         <form onSubmit={download}>
-          <div><label htmlFor="x-from">From</label><input id="x-from" type="date" value={from} max={to || undefined} onChange={(e) => setFrom(e.target.value)} /></div>
-          <div><label htmlFor="x-to">To</label><input id="x-to" type="date" value={to} min={from || undefined} onChange={(e) => setTo(e.target.value)} /></div>
-          <button type="submit" disabled={!valid || busy}>Download CSV</button>
+          <DateField id="x-from" label="From" value={from} max={to || undefined} onChange={(e) => setFrom(e.target.value)} />
+          <DateField id="x-to" label="To" value={to} min={from || undefined} onChange={(e) => setTo(e.target.value)} />
+          <Button type="submit" disabled={!valid || busy}>Download CSV</Button>
         </form>
       )}
     </section>

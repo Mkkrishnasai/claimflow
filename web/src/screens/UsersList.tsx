@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api, ApiError } from '../api';
+import { Alert, FlagBadge, PageHeader, Table } from '../ui/components';
 
 export interface ListUser { id: string; name: string; email: string; role: string; managerId: string | null; managerName: string | null; active: boolean; managerInactive: boolean }
 
@@ -13,21 +14,15 @@ export default function UsersList() {
 
   return (
     <section>
-      <h1 tabIndex={-1}>Users</h1>
-      {error && <p role="alert" className="error">{error}</p>}
-      <ul className="cards">
-        {users?.map((u) => (
-          <li key={u.id}>
-            <h2><a href={`/users/${u.id}`}>{u.name}</a></h2>
-            <dl>
-              <dt>Email</dt><dd>{u.email}</dd>
-              <dt>Role</dt><dd>{u.role}</dd>
-              <dt>Manager</dt><dd>{u.managerName ?? 'None'}{u.managerInactive && <strong className="flag"> (manager inactive)</strong>}</dd>
-              <dt>State</dt><dd>{u.active ? 'Active' : 'Inactive'}</dd>
-            </dl>
-          </li>
-        ))}
-      </ul>
+      <PageHeader title="Users" />
+      {error && <Alert>{error}</Alert>}
+      {users && <Table<ListUser> rowKey={(u) => u.id} rows={users} columns={[
+        { key: 'name', header: 'Name', primary: true, cell: (u) => <a href={`/users/${u.id}`}>{u.name}</a> },
+        { key: 'email', header: 'Email', cell: (u) => u.email },
+        { key: 'role', header: 'Role', cell: (u) => u.role },
+        { key: 'manager', header: 'Manager', cell: (u) => <>{u.managerName ?? 'None'}{u.managerInactive && <FlagBadge>(manager inactive)</FlagBadge>}</> },
+        { key: 'state', header: 'State', cell: (u) => (u.active ? 'Active' : 'Inactive') },
+      ]} />}
     </section>
   );
 }
