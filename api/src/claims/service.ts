@@ -373,13 +373,14 @@ export const rejectClaim = (d: ClaimDeps, user: User, id: string, body: Record<s
 });
 
 // E-37 (FR-2). Order: 404, 403 forbidden, 403 self_payment, 409 claim_paid, 409 invalid_transition, 409 approval_missing, then 422 input; every check precedes the one moveClaim. Only paymentDate and reference are read.
-async function loadForPayment(tx: Tx, user: User, id: string) {
+async function loadForPayment(tx: Tx, user: User, id: string, needApprovals = true) {
   const c = await tx.claim.findUnique({ where: { id }, select: { id: true, status: true, claimantId: true } });
   if (!c) throw new HttpError(404, 'not_found');
   requireFinance(user);
   if (c.claimantId === user!.id) throw new HttpError(403, 'self_payment');
   if (c.status === 'paid') throw new HttpError(409, 'claim_paid');
   if (c.status !== 'ready_to_pay') throw new HttpError(409, 'invalid_transition');
+  if (!needApprovals) return c; // send-back: no approvalsComplete check (ADR-42)
   const events = await tx.claimEvent.findMany({ where: { claimId: id }, orderBy: { seq: 'asc' }, select: { action: true } });
   if (!approvalsComplete(events.map((e) => e.action))) throw new HttpError(409, 'approval_missing');
   return c;
@@ -392,5 +393,15 @@ export const payClaim = (d: ClaimDeps, user: User, id: string, body: Record<stri
   if (paymentDate > utcToday(now)) throw bad('date must not be in the future');
   const paymentReference = text(body.reference, 'reference', 1, 100);
   const ev = await moveClaim(tx, { claimId: id, action: 'pay', actorId: user!.id, now, set: { updatedAt: now, paymentDate, paymentReference }, beforeAppend: d.beforeAppend });
+  return { claim: await reload(tx, id), ev };
+});
+
+// E-38 (FR-4). Same checks as pay up to the status checks, then 422 for the reason; moveClaim raises reason_required below 10. Only `reason` is read.
+export const sendBackClaim = (d: ClaimDeps, user: User, id: string, body: Record<string, unknown>) => withWrite(d.prisma, async (tx) => {
+  await loadForPayment(tx, user, id, false);
+  const reason = typeof body.reason === 'string' ? body.reason.trim() : null;
+  if (reason && reason.length > 500) throw bad('reason must be at most 500 characters');
+  const now = d.clock();
+  const ev = await moveClaim(tx, { claimId: id, action: 'send_back', actorId: user!.id, reason, now, set: { updatedAt: now }, beforeAppend: d.beforeAppend });
   return { claim: await reload(tx, id), ev };
 });

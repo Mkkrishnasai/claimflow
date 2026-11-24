@@ -84,3 +84,24 @@ test('NFR-PERF-1 POST /api/claims/:id/pay p95 under 500 ms over 20 distinct clai
   times.sort((a, b) => a - b);
   assert.ok(times[Math.floor(times.length * 0.95)] < 500);
 });
+
+test('NFR-PERF-1 POST /api/claims/:id/send-back p95 under 500 ms over 20 distinct claims', async () => {
+  const pre = await fetch(`${base}/api/auth/csrf`);
+  const token = ((await pre.json()) as { csrfToken: string }).csrfToken;
+  const r = await fetch(`${base}/api/auth/sign-in`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-csrf-token': token, cookie: pre.headers.getSetCookie()[0].split(';')[0] },
+    body: JSON.stringify({ email: 'fin@claimflow.test', password: PW }),
+  });
+  const cookie = r.headers.getSetCookie().find((c) => c.startsWith('sid='))!.split(';')[0];
+  const csrf = ((await r.json()) as { csrfToken: string }).csrfToken;
+  const times: number[] = [];
+  for (let i = 21; i <= 40; i++) {
+    const t = performance.now();
+    const res = await fetch(`${base}/api/claims/c${i}/send-back`, { method: 'POST', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ reason: 'Receipt unreadable' }) });
+    assert.equal(res.status, 200);
+    times.push(performance.now() - t);
+  }
+  times.sort((a, b) => a - b);
+  assert.ok(times[Math.floor(times.length * 0.95)] < 500);
+});

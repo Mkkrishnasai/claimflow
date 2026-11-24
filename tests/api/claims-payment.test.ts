@@ -240,3 +240,78 @@ test('S4 AC-5 finance cannot pay own claim, even as approver; another finance ca
   assert.equal((await row(c.id)).status, 'ready_to_pay'); assert.equal((await events(c.id)).length, 0);
   assert.equal((await pay('fin2', c.id)).status, 200);
 });
+
+// ---- CLAIM-6-S5: send back ----
+const REASON = 'Receipt unreadable';
+const sb = async (who: string | null, id: string, body: unknown = { reason: REASON }, csrf = true) => fetch(`${base}/api/claims/${id}/send-back`, { method: 'POST', headers: who ? await login(who, csrf) : { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+const hist = (id: string) => prisma.claimEvent.count({ where: { claimId: id } });
+
+test('S5 AC-1 send back: 200 rejected, payment null, one send_back row with reason and finance actor', async () => {
+  const c = await rtp();
+  const r = await sb('fin', c.id);
+  assert.equal(r.status, 200);
+  const j = (await r.json()) as J;
+  assert.equal(j.status, 'rejected'); assert.equal(j.payment, null);
+  const ev = await prisma.claimEvent.findMany({ where: { claimId: c.id, action: 'send_back' } });
+  assert.deepEqual(ev.map((e) => [e.actorId, e.reason]), [['fin', REASON]]);
+  const x = await row(c.id); assert.deepEqual([x.paymentDate, x.paymentReference], [null, null]);
+});
+
+test('S5 AC-2 short/long reasons refused, nothing changes', async () => {
+  const c = await rtp(); const n = await hist(c.id);
+  for (const b of [{}, { reason: '   ' }, { reason: 'x'.repeat(9) }, { reason: ` ${'x'.repeat(9)} ` }]) {
+    const r = await sb('fin', c.id, b); assert.equal(r.status, 422, JSON.stringify(b)); assert.equal(((await r.json()) as J).error, 'reason_required');
+  }
+  const r = await sb('fin', c.id, { reason: 'x'.repeat(501) }); assert.equal(r.status, 422); assert.equal(((await r.json()) as J).error, 'invalid_input');
+  assert.equal((await row(c.id)).status, 'ready_to_pay'); assert.equal(await hist(c.id), n);
+});
+
+test('S5 AC-3 employee sees rejected, edits, resubmits; absent from payments; pay refused', async () => {
+  const c = await rtp();
+  assert.equal((await sb('fin', c.id)).status, 200);
+  await prisma.user.update({ where: { id: 'emp' }, data: { managerId: 'mgr' } });
+  for (const l of await prisma.claimLine.findMany({ where: { claimId: c.id } })) { // make the claim pass submit policy
+    await prisma.claimLine.update({ where: { id: l.id }, data: { date: TODAY } });
+    await prisma.receipt.create({ data: { lineId: l.id, claimId: c.id, uploadedById: 'emp', uploadedAt: new Date(), storageKey: `k${l.id}`, sha256: 'h', sizeBytes: 1, mime: 'image/png' } });
+  }
+  const e = await login('emp');
+  const list = (await (await fetch(`${base}/api/claims`, { headers: e })).json()) as J[];
+  assert.equal(list.find((i) => i.id === c.id)!.status, 'rejected');
+  assert.equal((await fetch(`${base}/api/claims/${c.id}`, { method: 'PATCH', headers: e, body: JSON.stringify({ title: 'fixed title' }) })).status, 200);
+  const s = await fetch(`${base}/api/claims/${c.id}/submit`, { method: 'POST', headers: e, body: '{}' });
+  assert.equal(s.status, 200);
+  const g = (await (await get(await signIn('fin'))).json()) as J;
+  assert.ok(!g.items.some((i: J) => i.id === c.id));
+  assert.equal((await pay('fin', c.id)).status, 409);
+});
+
+test('S5 AC-4 refusals mirror pay; 0 rows changed', async () => {
+  const c = await rtp(); const n = await hist(c.id);
+  for (const who of ['emp', 'mgr', 'adm']) { const r = await sb(who, c.id); assert.equal(r.status, 403); assert.deepEqual(await r.json(), { error: 'forbidden' }); }
+  assert.equal((await sb('fin', 'nope')).status, 404);
+  const paid = await mk('paid'); const sub = await mk('submitted');
+  const p = await sb('fin', paid.id); assert.equal(p.status, 409); assert.equal(((await p.json()) as J).error, 'claim_paid');
+  const u = await sb('fin', sub.id); assert.equal(u.status, 409); assert.equal(((await u.json()) as J).error, 'invalid_transition');
+  assert.equal(await hist(paid.id) + await hist(sub.id), 0);
+  await prisma.claim.update({ where: { id: c.id }, data: { claimantId: 'fin' } });
+  const o = await sb('fin', c.id); assert.equal(o.status, 403); assert.equal(((await o.json()) as J).error, 'self_payment');
+  assert.equal((await row(c.id)).status, 'ready_to_pay'); assert.equal(await hist(c.id), n);
+});
+
+test('S5 AC-5 pay and send-back race: one 200, one 409, one new history row', async () => {
+  const c = await rtp(); const h = await login('fin'); const n = await hist(c.id);
+  const rs = await Promise.all([payAs(h, c.id), fetch(`${base}/api/claims/${c.id}/send-back`, { method: 'POST', headers: h, body: JSON.stringify({ reason: REASON }) })]);
+  assert.deepEqual(rs.map((r) => r.status).sort(), [200, 409]);
+  assert.equal(await hist(c.id), n + 1);
+});
+
+test('S5 AC-6 log line has send_back fields only; reason never logged or echoed', async () => {
+  const c = await rtp(); logs.length = 0;
+  const bad = await sb('fin', c.id, { reason: 'SECRET-REASON-xyz'.slice(0, 9) }); assert.equal(bad.status, 422);
+  const big = await sb('fin', c.id, { reason: `SECRET-REASON-xyz${'x'.repeat(500)}` }); assert.ok(!(await big.text()).includes('SECRET-REASON-xyz'));
+  assert.equal((await sb('fin', c.id, { reason: 'SECRET-REASON-xyz' })).status, 200);
+  assert.ok(!logs.join('').includes('SECRET-REASON-xyz'));
+  const ev = logs.map((l) => JSON.parse(l)).filter((l) => l.claimEvent === 'send_back');
+  assert.equal(ev.length, 1);
+  assert.deepEqual([ev[0].claimId, ev[0].from, ev[0].to], [c.id, 'ready_to_pay', 'rejected']);
+});
