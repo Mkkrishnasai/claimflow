@@ -1,6 +1,6 @@
 import { useEffect, useState, type ChangeEvent } from 'react';
 import { api, ApiError } from '../api';
-import { formatCents, parseEuro } from '../money';
+import { formatCents, justificationFor, parseEuro } from '../money';
 
 interface Receipt { id: string; originalName: string | null }
 interface Line { key: string; id?: string; date: string; categoryCode: string; amount: string; description: string; justification: string; stored: boolean; receipts: Receipt[]; err: string; amountErr: string }
@@ -55,7 +55,7 @@ export default function ClaimEditor({ id, go }: { id: string; go: (to: string) =
     const checked = lines.map((l) => ({ l, cents: parseEuro(l.amount) }));
     setLines((ls) => ls.map((l) => ({ ...l, err: '', amountErr: parseEuro(l.amount) === null ? 'Enter an amount from 0.01 to 10000.00, such as 12.50' : '' })));
     if (checked.some((x) => x.cents === null)) return;
-    const body = (l: Line, cents: number) => ({ date: l.date, categoryCode: l.categoryCode, amountCents: cents, description: l.description, justification: l.justification.trim() || null });
+    const body = (l: Line, cents: number) => ({ date: l.date, categoryCode: l.categoryCode, amountCents: cents, description: l.description, justification: justificationFor(cents, cats.find((c) => c.code === l.categoryCode)?.limitCents ?? 0, l.justification) }); // CR-1: only while over the limit
     try {
       if (!id) {
         const c = await api<ServerClaim>('/claims', 'POST', { title, purpose, lines: checked.map((x) => body(x.l, x.cents!)) });

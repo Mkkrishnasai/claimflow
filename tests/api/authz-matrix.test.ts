@@ -7,15 +7,15 @@ import { PrismaClient } from '@prisma/client';
 import { createApp } from '../../api/src/app.js';
 import { createLogger } from '../../api/src/logger.js';
 import { claimTestRouteDefs } from '../../api/src/test-routes.js';
-import { claimRouteDefs } from '../../api/src/claims/routes.js';
+import { claimRouteDefs, receiptUploadDefs } from '../../api/src/claims/routes.js';
 import { userRouteDefs } from '../../api/src/users/routes.js';
+import { ROLES, ROLE_USER, ALL_STATUSES, POS, canRead } from './authz-matrix.helpers.js';
 
 const PW = 'correct horse battery';
 const prisma = new PrismaClient();
 let srv: Server, srv2: Server, base: string, base2: string;
 type S = { cookie: string; csrf: string };
 const sessions: Record<string, S> = {};
-const ROLES = ['employee', 'manager', 'finance', 'admin'] as const;
 const listen = async (testRoutes: boolean) => {
   const s = createApp({ testRoutes, log: createLogger({ write: () => true }), deps: { prisma, clock: () => new Date(), mailer: {} as never, publicBaseUrl: 'http://app.test' } }).listen(0, '127.0.0.1');
   await new Promise((r) => s.once('listening', r));
@@ -35,10 +35,6 @@ async function signIn(email: string): Promise<S> {
 }
 const call = (s: S | null, method: string, path: string, body?: unknown, csrf: string | null = s?.csrf ?? null, b = base) =>
   fetch(`${b}${path}`, { method, headers: { 'content-type': 'application/json', ...(s ? { cookie: s.cookie } : {}), ...(csrf ? { 'x-csrf-token': csrf } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) });
-
-// Requesters: emp (E), mgr (M, manager of d1 and of m1), fin (F), adm (A).
-// d1 -> M (depth 1); d2 -> m1 -> M (depth 2); d3 -> m2 -> m1 -> M (depth 3); M -> U (upward); ob -> OB (other branch); un (unrelated).
-const POS: Record<string, string> = { own: 'mgr', d1: 'd1', d2: 'd2', d3: 'd3', upward: 'U', other: 'ob', unrelated: 'un' };
 
 before(async () => {
   const passwordHash = await bcrypt.hash(PW, 4);
@@ -65,10 +61,6 @@ after(async () => {
   await prisma.user.updateMany({ data: { managerId: null } }); await prisma.user.deleteMany(); await prisma.$disconnect();
 });
 
-const ROLE_USER = { employee: 'emp', manager: 'mgr', finance: 'fin', admin: 'adm' } as const;
-
-const ALL_STATUSES = ['draft', 'submitted', 'approved', 'rejected', 'ready_to_pay', 'paid'];
-
 // Same cells for the fixture route and the production route; `mk` creates a claim and returns its id.
 // `paid` rows are undeletable by trigger, so the DB-backed run skips it (canReadClaim treats it like approved; the fixture run covers it).
 async function matrix(mk: (claimantId: string, status: string) => Promise<string>, path: (id: string) => string, STATUSES6 = ALL_STATUSES) {
@@ -78,16 +70,10 @@ async function matrix(mk: (claimantId: string, status: string) => Promise<string
   let n = 0;
   for (const role of ROLES) {
     const s = sessions[ROLE_USER[role]];
-    const expect = (cell: string, status: string): number => {
-      if (cell === 'own') return 200;
-      if (role === 'manager') return cell === 'd1' || cell === 'd2' ? 200 : 403;
-      if (role === 'finance') return status !== 'draft' ? 200 : 403;
-      return 403;
-    };
     for (const cell of Object.keys(POS)) for (const status of STATUSES6) {
       const id = cell === 'own' && role !== 'manager' ? ids[`own-${ROLE_USER[role]}/${status}`] : ids[`${cell}/${status}`];
       const r = await call(s, 'GET', path(id));
-      assert.equal(r.status, expect(cell, status), `${role} ${cell} ${status}`);
+      assert.equal(r.status, canRead(role, cell, status), `${role} ${cell} ${status}`);
       if (r.status === 403) assert.deepEqual(await r.json(), { error: 'forbidden' });
       n++;
     }
@@ -153,17 +139,21 @@ test('AC-2 user-data routes, shapes, 403 vs 404', async () => {
 });
 
 const fill = (p: string) => p.replace(':id', 'x');
-const defs = () => [...userRouteDefs({} as never), ...claimTestRouteDefs({} as never), ...claimRouteDefs({} as never)].filter((d) => d.data !== 'none' || d.write);
+const defs = () => [...userRouteDefs({} as never), ...claimTestRouteDefs({} as never), ...claimRouteDefs({} as never), ...receiptUploadDefs({} as never)].filter((d) => d.data !== 'none' || d.write);
 
 test('AC-3 every route: 401 without session, 403 csrf on writes with bad token', async () => {
   const before = await prisma.user.count();
   for (const d of defs()) {
     const path = (d.path.startsWith('/__test') ? '' : '/api') + fill(d.path);
     const m = d.method.toUpperCase();
-    assert.equal((await call(null, m, path, d.write ? {} : undefined)).status, 401, `${m} ${path}`);
+    const upload = d.path.endsWith('/receipts') && m === 'POST'; // raw body, not JSON
+    const send = (s: S | null, csrf: string | null) => upload
+      ? fetch(`${base}${path}`, { method: m, headers: { 'content-type': 'image/png', ...(s ? { cookie: s.cookie } : {}), ...(csrf ? { 'x-csrf-token': csrf } : {}) }, body: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2]) })
+      : call(s, m, path, d.write ? {} : undefined, csrf);
+    assert.equal((await send(null, null)).status, 401, `${m} ${path}`);
     if (!d.write) continue;
     for (const csrf of [null, 'wrong']) {
-      const r = await call(sessions.adm, m, path, {}, csrf);
+      const r = await send(sessions.adm, csrf);
       assert.equal(r.status, 403, `${m} ${path}`);
       assert.deepEqual(await r.json(), { error: 'csrf' });
     }

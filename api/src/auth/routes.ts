@@ -3,7 +3,7 @@ import type { PrismaClient } from '@prisma/client';
 import { HttpError } from '../middleware.js';
 import { withWrite, type Clock } from '../db.js';
 import { checkPassword, hashPassword, needsRehash, randomToken, sha256, verifyPassword } from './secrets.js';
-import { clearFailures, isLocked, recordFailure, takeForgotSlot } from './throttle.js';
+import { clearFailures, ipBlocked, isLocked, recordFailure, recordIpFailure, takeForgotIpSlot, takeForgotSlot } from './throttle.js';
 import type { Logger } from '../logger.js';
 import type { Mailer } from '../mailer.js';
 import { clearCookie, csrfFor, parseCookies, setCookie } from './session.js';
@@ -30,14 +30,21 @@ export function authRoutes(prisma: PrismaClient, clock: Clock, verify: typeof ve
     const hash = user?.active ? user.passwordHash : null;
     res.locals.logFields = { authEvent: 'sign_in_failed', ...(user && { userId: user.id }) };
     // A locked request is refused before the password is evaluated; the dummy compare keeps timing equal (NFR-SEC-6).
+    const ip = req.ip ?? 'unknown';
     if (await isLocked(prisma, email, clock())) {
       await verify(password, null);
       res.locals.logFields.authEvent = 'sign_in_locked';
       throw invalid();
     }
+    if (await ipBlocked(prisma, ip, clock())) { // CR-1: per-IP limit, same body as a bad password
+      await verify(password, null);
+      res.locals.logFields.authEvent = 'sign_in_ip_limited';
+      throw invalid();
+    }
     if (!(await verify(password, hash)) || !user) {
       const { locked } = await withWrite(prisma, async (tx) => {
         const now = clock();
+        await recordIpFailure(tx, ip, now);
         if (await isLocked(tx, email, now)) return { locked: false }; // concurrent lock: write nothing
         return recordFailure(tx, email, now);
       });
@@ -94,6 +101,7 @@ export function authRoutes(prisma: PrismaClient, clock: Clock, verify: typeof ve
     const now = clock();
     res.locals.logFields = { authEvent: 'reset_requested' };
     const to = await withWrite(prisma, async (tx) => {
+      if (!(await takeForgotIpSlot(tx, req.ip ?? 'unknown', now))) return null;
       if (!(await takeForgotSlot(tx, email, now))) return null;
       const u = await tx.user.findUnique({ where: { email } });
       if (!u?.active || !u.passwordHash) return null;

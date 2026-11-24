@@ -1,67 +1,10 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { chromium, type Browser, type Page } from '@playwright/test';
-import AxeBuilder from '@axe-core/playwright';
+import { readFileSync } from 'node:fs';
+import { WEB, PW, NEW_PW, startStack, stopStack, apiAs, mailLink, phone, clean } from './stack.helpers.js';
 
-const WEB = 'http://127.0.0.1:5173';
-const MAIL = 'http://127.0.0.1:8025';
-const PW = 'correct horse battery';
-const NEW_PW = 'brand-new-password';
-const dir = mkdtempSync(join(tmpdir(), 'a11y-'));
-let proc: ChildProcess;
-let browser: Browser;
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-async function apiAs(email: string, password: string) {
-  const c = await fetch(`${WEB}/api/auth/csrf`);
-  const csrf = ((await c.json()) as { csrfToken: string }).csrfToken;
-  const pre = c.headers.getSetCookie()[0].split(';')[0];
-  const r = await fetch(`${WEB}/api/auth/sign-in`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-csrf-token': csrf, cookie: pre }, body: JSON.stringify({ email, password }) });
-  const body = (await r.json()) as { csrfToken: string };
-  return { csrf: body.csrfToken, cookie: r.headers.getSetCookie()[0].split(';')[0] };
-}
-async function mailLink(to: string): Promise<string> {
-  for (let i = 0; i < 50; i++) {
-    const list = (await (await fetch(`${MAIL}/api/v1/messages`)).json()) as { messages: { ID: string; To: { Address: string }[] }[] };
-    const m = list.messages.find((x) => x.To[0].Address === to);
-    if (m) {
-      const text = ((await (await fetch(`${MAIL}/api/v1/message/${m.ID}`)).json()) as { Text: string }).Text;
-      return text.match(/https?:\/\/\S+/)![0];
-    }
-    await sleep(200);
-  }
-  throw new Error('no mail');
-}
-const phone = async () => (await browser.newContext({ viewport: { width: 360, height: 740 } })).newPage();
-async function clean(page: Page, label: string, strict = false) {
-  const { violations } = await (strict ? new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']) : new AxeBuilder({ page })).analyze();
-  const bad = strict ? violations : violations.filter((v) => v.impact === 'serious' || v.impact === 'critical');
-  assert.deepEqual(bad.map((v) => v.id), [], label);
-  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), `${label}: horizontal scroll`);
-}
-
-before(async () => {
-  proc = spawn('npm', ['start', '--silent'], {
-    detached: true, stdio: 'ignore',
-    env: { ...process.env, DATABASE_URL: `file:${join(dir, 't.db')}`, SEED_PASSWORD: PW, DOTENV_CONFIG_PATH: join(dir, 'none'), NODE_ENV: 'development' },
-  });
-  for (let i = 0; ; i++) {
-    try { if ((await fetch(`${WEB}/api/auth/csrf`)).ok && (await fetch(`${MAIL}/`)).ok) break; } catch {}
-    assert.ok(i < 300, 'stack did not start');
-    await sleep(200);
-  }
-  browser = await chromium.launch();
-});
-after(async () => {
-  await browser?.close();
-  try { process.kill(-proc.pid!, 'SIGTERM'); } catch {}
-  await sleep(1000);
-  rmSync(dir, { recursive: true, force: true });
-});
+before(startStack);
+after(stopStack);
 
 test('AC-5 axe 0 serious/critical and no horizontal scroll at 360 px', async () => {
   const page = await phone();
@@ -213,7 +156,7 @@ test('S9 claims list and editor: capture, amounts, a11y at 360 px, keyboard', as
   await page.getByRole('heading', { name: 'My claims' }).waitFor();
   await page.getByText('No claims yet').waitFor();
   assert.equal(await page.evaluate(() => document.activeElement?.tagName), 'H1');
-  await clean(page, '/claims', true);
+  await clean(page, '/claims');
   assert.equal(await page.getByRole('link', { name: 'My account' }).count(), 1);
 
   await page.getByRole('link', { name: 'New claim' }).click();
@@ -222,7 +165,7 @@ test('S9 claims list and editor: capture, amounts, a11y at 360 px, keyboard', as
   for (const id of await page.locator('input:not([type=file]), select, textarea').evaluateAll((els) => els.map((e) => e.id))) {
     assert.equal(await page.locator(`label[for="${id}"]:visible`).count(), 1, `label for #${id}`);
   }
-  await clean(page, '/claims/new', true);
+  await clean(page, '/claims/new');
   assert.ok((await page.locator('select option').first().innerText()).includes('limit EUR'));
 
   await page.fill('#title', 'Berlin trip');
@@ -248,7 +191,7 @@ test('S9 claims list and editor: capture, amounts, a11y at 360 px, keyboard', as
     assert.ok(box.width >= 44 && box.height >= 44, 'tap target >= 44px');
   }
   assert.equal(await page.locator('input[capture=environment][accept="image/*"]').count(), 1);
-  await clean(page, '/claims/:id/edit', true);
+  await clean(page, '/claims/:id/edit');
 
   // upload: valid PNG accepted, text file refused with the server's reason in an alert
   const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64');
@@ -301,7 +244,7 @@ test('S10 claim detail: content, actions, no-manager, errors, a11y at 360 px', a
     const box = (await b.boundingBox())!;
     assert.ok(box.width >= 44 && box.height >= 44, 'tap target >= 44px');
   }
-  await clean(page, '/claims/:id', true);
+  await clean(page, '/claims/:id');
 
   await page.getByRole('button', { name: 'Submit' }).click();
   await page.getByRole('button', { name: 'Withdraw' }).waitFor();
@@ -350,14 +293,14 @@ test('CLAIM-4-S5 failures list, flags and justification field at 360 px', async 
   for (const t of await alert.locator('li').allInnerTexts()) assert.match(t, /^(Line \d+|Claim)/);
   assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('role')), 'alert');
   assert.equal(await page.getByText('draft', { exact: true }).count(), 1);
-  await clean(page, 'refused submit', true);
+  await clean(page, 'refused submit');
 
   // editor: justification field appears above the limit
   await page.goto(`${WEB}/claims/${bad}/edit`);
   await page.locator('textarea[id^=just-]').first().waitFor();
   assert.match(await page.locator('label[for^=just-]').first().innerText(), /^Justification \(at least 20 characters, required above EUR /);
   assert.equal(await page.locator('textarea[id^=just-]').count(), 1); // line 2 is within limit
-  await clean(page, 'editor with justification', true);
+  await clean(page, 'editor with justification');
 
   // flags: same date/category/amount on the claimant's other submitted claim
   const today = new Date().toISOString().slice(0, 10);
@@ -367,7 +310,7 @@ test('CLAIM-4-S5 failures list, flags and justification field at 360 px', async 
   await page.goto(`${WEB}/claims/${second}`);
   await page.getByText('Possible duplicate (same date, category and amount)').waitFor();
   assert.equal(await page.getByRole('link', { name: 'View earlier claim' }).getAttribute('href'), `/claims/${first}`);
-  await clean(page, 'detail with flag', true);
+  await clean(page, 'detail with flag');
 });
 
 test('CLAIM-5-S5 approvals inbox: cards, flags, receipts, nav, a11y at 360 px', async () => {
@@ -402,7 +345,7 @@ test('CLAIM-5-S5 approvals inbox: cards, flags, receipts, nav, a11y at 360 px', 
   assert.equal(await card.getByRole('link', { name: /^Receipt/ }).getAttribute('href'), `/api/claims/${second.id}/receipts/${receipt}`);
   const plain = page.locator('ul.cards > li').filter({ has: page.locator(`a[href="/approvals/${first.id}"]`) });
   assert.equal(await plain.getByText(/Over limit|Possible duplicate/).count(), 0);
-  await clean(page, '/approvals', true);
+  await clean(page, '/approvals');
 
   // nav link: managers only
   const emp = await phone();
@@ -446,7 +389,7 @@ test('CLAIM-5-S6 review screen: read-only, reject error focus, approve, a11y at 
   await page.getByRole('alert').waitFor();
   assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('role')), 'alert');
   await page.getByText('submitted', { exact: true }).waitFor();
-  await clean(page, 'review with flag and error', true);
+  await clean(page, 'review with flag and error');
 
   await page.getByLabel('Reason for rejection').fill('Receipt does not match the amount');
   await page.getByRole('button', { name: 'Reject' }).click();
@@ -469,9 +412,9 @@ test('CLAIM-6-S6 payments queue: cards, flags, nav, a11y at 360 px', async () =>
   const s = await apiAs('employee@claimflow.test', PW);
   const h = { 'content-type': 'application/json', 'x-csrf-token': s.csrf, cookie: s.cookie };
   const cat = ((await (await fetch(`${WEB}/api/categories`, { headers: { cookie: s.cookie } })).json()) as { code: string; limitCents: number }[])[0];
-  const date = '2026-01-15';
+  const date = new Date().toISOString().slice(0, 10); // within the submit-age limit
   const line = (amountCents: number) => ({ date, categoryCode: cat.code, amountCents, description: 'Queue taxi', justification: 'Client dinner with the whole team' });
-  const mk = async () => ((await (await fetch(`${WEB}/api/claims`, { method: 'POST', headers: h, body: JSON.stringify({ title: 'Queue trip', purpose: 'Client workshop in Berlin', lines: [line(100)] }) })).json()) as { id: string }).id;
+  const mk = async () => ((await (await fetch(`${WEB}/api/claims`, { method: 'POST', headers: h, body: JSON.stringify({ title: 'Queue trip', purpose: 'Client workshop in Berlin', lines: [line(191)] }) })).json()) as { id: string }).id;
   const first = await mk();
   const second = await mk(); // same date, category, amount: flagged as duplicate
   const m = await apiAs('manager@claimflow.test', PW);
@@ -496,7 +439,7 @@ test('CLAIM-6-S6 payments queue: cards, flags, nav, a11y at 360 px', async () =>
   await card.getByText('Possible duplicate (1)').waitFor();
   const plain = page.locator('ul.cards > li').filter({ has: page.locator(`a[href="/payments/${first}"]`) });
   assert.equal(await plain.getByText(/Over limit|Possible duplicate/).count(), 0);
-  await clean(page, '/payments', true);
+  await clean(page, '/payments');
 
   // nav link: finance only; others get Access denied
   const emp = await phone();
@@ -545,7 +488,7 @@ test('CLAIM-6-S7 payment screen: controls, send-back error focus, pay, own claim
   await page.getByRole('alert').waitFor();
   assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('role')), 'alert');
   await page.getByText('ready_to_pay', { exact: true }).waitFor();
-  await clean(page, 'payment screen with error', true);
+  await clean(page, 'payment screen with error');
 
   await page.getByLabel('Reason for sending back').fill('Receipt does not match the amount');
   await page.getByRole('button', { name: 'Send back' }).click();
@@ -587,7 +530,7 @@ test('CLAIM-7-S8 policy screen: load, validate, save once, access, a11y at 360 p
   assert.equal(await page.locator('form input').count(), 8);
   assert.equal(await page.getByLabel('Meals limit').inputValue(), '50.00');
   await page.getByText('Changes apply to claims submitted from now on. Claims already submitted keep their current values.').waitFor();
-  await clean(page, '/policy', true);
+  await clean(page, '/policy');
 
   await page.getByRole('button', { name: 'Save policy' }).click();
   await page.getByRole('status').getByText('No changes to save').waitFor();
@@ -628,7 +571,7 @@ test('CLAIM-7-S9 export screen: download, range validity, failure, access, a11y 
   await page.getByRole('heading', { name: 'Export paid claims', level: 1 }).waitFor();
   await page.getByLabel('From').waitFor();
   assert.equal(await page.evaluate(() => document.activeElement?.tagName), 'H1');
-  await clean(page, '/export', true);
+  await clean(page, '/export');
 
   const btn = page.getByRole('button', { name: 'Download CSV' });
   assert.ok(await btn.isDisabled());
@@ -657,4 +600,60 @@ test('CLAIM-7-S9 export screen: download, range validity, failure, access, a11y 
   await emp.goto(`${WEB}/export`);
   await emp.getByRole('alert').getByText('Access denied').waitFor();
   assert.equal(await emp.locator('form').count(), 0);
+});
+
+// CLAIM-9-S3: every route, strict axe, 360 px, one visible label per input.
+// ponytail: ROUTES is the single list; paths in App.tsx are scanned as text by one regex.
+const ROUTES = ['/sign-in', '/set-password', '/reset-password', '/forgot-password', '/claims', '/claims/new', '/claims/:id/edit', '/claims/:id', '/approvals', '/approvals/:id', '/payments', '/payments/:id', '/policy', '/export', '/users', '/users/:id', '/no-such-page'];
+
+test('AC-5 every path in App.tsx is in ROUTES', () => {
+  const src = readFileSync(new URL('../../web/src/App.tsx', import.meta.url), 'utf8');
+  const found = [...src.matchAll(/path === '([^']+)'|\.match\(\/\^([^$]+)\$\//g)].map((m) => m[1] ?? m[2].replaceAll('\\/', '/').replaceAll('([^/]+)', ':id'));
+  assert.ok(found.length >= 16, `only ${found.length} paths scanned`);
+  assert.deepEqual(found.filter((p) => !ROUTES.includes(p)), [], 'route in App.tsx missing from ROUTES');
+});
+
+test('AC-2/3/4 strict axe, no horizontal scroll and one label per input on every route', async () => {
+  const today = new Date().toISOString().slice(0, 10);
+  const login = async (who: string) => { const s = await apiAs(`${who}@claimflow.test`, PW); return { s, h: { 'content-type': 'application/json', 'x-csrf-token': s.csrf, cookie: s.cookie } }; };
+  const emp = await login('employee');
+  const mgr = await login('manager');
+  const cat = ((await (await fetch(`${WEB}/api/categories`, { headers: { cookie: emp.s.cookie } })).json()) as { code: string }[])[0];
+  const mk = async (step: 'draft' | 'submit' | 'approve') => {
+    const body = { title: 'Sweep trip', purpose: 'Client workshop in Berlin', lines: [{ date: today, categoryCode: cat.code, amountCents: 100, description: 'Taxi' }] };
+    const id = ((await (await fetch(`${WEB}/api/claims`, { method: 'POST', headers: emp.h, body: JSON.stringify(body) })).json()) as { id: string }).id;
+    if (step !== 'draft') assert.equal((await fetch(`${WEB}/api/claims/${id}/submit`, { method: 'POST', headers: emp.h })).status, 200);
+    if (step === 'approve') assert.equal((await fetch(`${WEB}/api/claims/${id}/approve`, { method: 'POST', headers: mgr.h })).status, 200);
+    return id;
+  };
+  const claimIds = { draft: await mk('draft'), submitted: await mk('submit'), approved: await mk('approve') };
+  const admin = await login('admin');
+  const adminId = ((await (await fetch(`${WEB}/api/users`, { headers: { cookie: admin.s.cookie } })).json()) as { id: string; role: string }[]).find((u) => u.role === 'admin')!.id;
+  // role that can view each route; auth pages and not-found need no session
+  const role = (r: string) => (/^\/(sign-in|set-password|reset-password|forgot-password)$/.test(r) ? null
+    : r.startsWith('/users') ? 'admin' : r.startsWith('/payments') || r === '/policy' || r === '/export' ? 'finance' : r.startsWith('/approvals') ? 'manager' : 'employee');
+  const pages: Record<string, Awaited<ReturnType<typeof phone>>> = { none: await phone() };
+  for (const r of ['admin', 'finance', 'manager', 'employee']) {
+    const p = (pages[r] = await phone());
+    await p.goto(WEB + '/sign-in');
+    await p.fill('#email', `${r}@claimflow.test`);
+    await p.fill('#password', PW);
+    await p.press('#password', 'Enter');
+    await p.getByRole('heading').first().waitFor();
+  }
+  for (const route of ROUTES) {
+    const page = pages[role(route) ?? 'none'];
+    const id = route.startsWith('/users') ? adminId : route.startsWith('/payments') ? claimIds.approved : route.startsWith('/approvals') ? claimIds.submitted : claimIds.draft;
+    const hash = route === '/set-password' || route === '/reset-password' ? '#token=x' : '';
+    await page.goto(WEB + route.replace(':id', id) + hash);
+    await page.locator('h1, form, [role=alert]').first().waitFor();
+    await page.waitForLoadState('networkidle');
+    if (route === '/no-such-page') await page.getByRole('alert').first().waitFor();
+    await clean(page, route);
+    const bad = await page.evaluate(() => [...document.querySelectorAll<HTMLInputElement>('input, select, textarea')]
+      .filter((e) => e.type !== 'hidden' && e.getClientRects().length > 0)
+      .filter((e) => e.labels?.length !== 1 || ![...e.labels].every((l) => l.getBoundingClientRect().width > 0 && l.getBoundingClientRect().height > 0))
+      .map((e) => e.id || e.name));
+    assert.deepEqual(bad, [], `${route}: inputs without exactly one visible label`);
+  }
 });

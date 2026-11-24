@@ -13,18 +13,24 @@ jobs:
       SMTP_HOST: localhost
       SMTP_PORT: "1025"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0 # full history for the history secret scan
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version-file: .nvmrc
           cache: npm
       - name: Install Mailpit and Gitleaks
         run: |
           mkdir -p "$HOME/.local/bin"
-          curl -fsSL https://github.com/axllent/mailpit/releases/download/v1.34.0/mailpit-linux-amd64.tar.gz | tar -xz -C "$HOME/.local/bin" mailpit
-          curl -fsSL https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz | tar -xz -C "$HOME/.local/bin" gitleaks
+          cd "$RUNNER_TEMP"
+          curl -fsSLO https://github.com/axllent/mailpit/releases/download/v1.34.0/mailpit-linux-amd64.tar.gz
+          curl -fsSLO https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          echo "af236b42f171b1c74f0ac5ff444f44d36f2f2ecc0134f5a2f1d4e307e56a0d2c  mailpit-linux-amd64.tar.gz" | sha256sum -c -
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  gitleaks_8.30.1_linux_x64.tar.gz" | sha256sum -c -
+          tar -xzf mailpit-linux-amd64.tar.gz -C "$HOME/.local/bin" mailpit
+          tar -xzf gitleaks_8.30.1_linux_x64.tar.gz -C "$HOME/.local/bin" gitleaks
+          cd "$GITHUB_WORKSPACE"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Generate disposable seed password
         run: |

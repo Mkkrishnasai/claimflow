@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { mkdtempSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import net from 'node:net';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import bcrypt from 'bcryptjs';
@@ -195,6 +196,7 @@ test('S5 AC-1/2/4 download: allowed readers, refusals, hierarchy change', async 
     assert.equal(r.headers.get('x-content-type-options'), 'nosniff');
     assert.equal(r.headers.get('cache-control'), 'private, no-store');
     assert.equal(r.headers.get('content-disposition'), 'inline');
+    assert.equal(r.headers.get('content-security-policy'), 'sandbox'); // CR-1
     assert.equal(r.headers.get('accept-ranges'), null);
   }
   assert.equal((await get(null, 'c1', rid)).status, 401);
@@ -264,4 +266,24 @@ test('no route deletes Claim/Receipt/ClaimEvent outside the draft-delete and lin
   const src = readFileSync('api/src/claims/service.ts', 'utf8');
   const hits = [...src.matchAll(/tx\.(claimEvent|receipt|claim)\.delete(Many)?/g)].map((m) => m[0]).sort();
   assert.deepEqual(hits, ['tx.claim.delete', 'tx.receipt.delete', 'tx.receipt.deleteMany', 'tx.receipt.deleteMany']);
+});
+
+test('CR-1 a stalled upload body times out and frees its slot', async () => {
+  process.env.RECEIPT_BODY_TIMEOUT_MS = '300';
+  try {
+    const s = await signIn('emp');
+    const port = Number(new URL(base).port);
+    // 4 = SLOTS: stalled bodies that announce 100 bytes and send 10
+    const socks = await Promise.all(Array.from({ length: 4 }, () => new Promise<net.Socket>((res) => {
+      const k = net.connect(port, '127.0.0.1', () => {
+        k.write(`POST /api/claims/c1/lines/c1-l/receipts HTTP/1.1\r\nHost: x\r\nCookie: ${s.cookie}\r\nX-CSRF-Token: ${s.csrf}\r\nContent-Type: image/jpeg\r\nContent-Length: 100\r\n\r\n`);
+        k.write(JPG);
+        res(k);
+      });
+      k.on('error', () => {});
+    })));
+    const r = await up(s, PDF(), {}, 'c2'); // would wait forever for a slot without the timeout
+    assert.equal(r.status, 201);
+    socks.forEach((k) => k.destroy());
+  } finally { delete process.env.RECEIPT_BODY_TIMEOUT_MS; }
 });

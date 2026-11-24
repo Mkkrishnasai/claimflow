@@ -69,7 +69,7 @@ export const claimRouteDefs = (d: ClaimDeps): RouteDef[] => [
   { method: 'get', path: '/claims/:id/receipts/:receiptId', data: 'claim', write: false, handler: async (req, res) => {
     const r = await receiptForRead(d, req.user, req.params.id as string, req.params.receiptId as string);
     const { size, handle } = await d.receipts.open(r.storageKey);
-    res.set({ 'Content-Type': r.mime, 'Content-Length': String(size), 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'private, no-store', 'Content-Disposition': 'inline' });
+    res.set({ 'Content-Type': r.mime, 'Content-Length': String(size), 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'private, no-store', 'Content-Disposition': 'inline', 'Content-Security-Policy': 'sandbox' });
     await pipeline(handle.createReadStream(), res);
   } },
   // E-31 / E-32: claimant-only; status is never read from the body
@@ -137,17 +137,22 @@ const release = () => { const n = waiting.shift(); if (n) n(); else busy--; };
 
 // Buffers up to MAX_BYTES; past that keeps draining (discarding) so the client gets the 413, not a reset.
 // A declared Content-Length is preallocated so peak memory is one copy; chunked bodies fall back to concat.
+const bodyTimeoutMs = () => Number(process.env.RECEIPT_BODY_TIMEOUT_MS) || 30_000; // env read per call so a test can shorten it
 async function readBody(req: Request): Promise<Buffer | null> {
   const declared = Number(req.get('content-length'));
   let buf = Number.isInteger(declared) && declared > 0 && declared <= MAX_BYTES ? Buffer.allocUnsafe(declared) : null;
   const chunks: Buffer[] = [];
   let n = 0;
+  // CR-1: a slow body must not hold the semaphore slot; destroying the stream ends the loop with an error.
+  const timer = setTimeout(() => req.destroy(new HttpError(408, 'receipt_timeout', 'Receipt upload took too long')), bodyTimeoutMs());
+  try {
   for await (const c of req as AsyncIterable<Buffer>) {
     if (n + c.length <= MAX_BYTES) {
       if (buf && n + c.length <= buf.length) c.copy(buf, n); else { if (buf) { chunks.push(buf.subarray(0, n)); buf = null; } chunks.push(c); }
     } else chunks.length = 0;
     n += c.length;
   }
+  } finally { clearTimeout(timer); }
   if (n > MAX_BYTES) return null;
   return buf && n === buf.length ? buf : Buffer.concat(buf ? [buf.subarray(0, n)] : chunks, n);
 }

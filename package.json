@@ -39,7 +39,7 @@
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
     "vite": "^6.0.0",
-    "vitest": "^3.2.7"
+    "vitest": "^4.1.12"
   },
   "workspaces": [
     "frontend"
