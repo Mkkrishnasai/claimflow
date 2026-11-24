@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { canReadClaim, canReadUser, requireAdmin } from '../../api/src/auth/authz.js';
+import { canReadClaim, canReadUser, requireAdmin, requireFinance } from '../../api/src/auth/authz.js';
 
 // chain: c0 -> d1 -> d2 -> d3 (claimant c0 reports to d1, ...). mgrOf stub, no DB.
 const up: Record<string, string> = { c0: 'd1', d1: 'd2', d2: 'd3', u: 'top', ob: 'obm' };
@@ -42,6 +42,14 @@ test('canReadUser and requireAdmin', () => {
     else assert.throws(() => requireAdmin({ id: 'x', role: r }), { status: 403 });
   }
   assert.throws(() => requireAdmin(undefined), { status: 403 });
+});
+
+test('requireFinance: finance only; every other role and no user get 403', () => {
+  for (const r of [...ROLES, 'other']) {
+    if (r === 'finance') assert.doesNotThrow(() => requireFinance({ id: 'x', role: r }));
+    else assert.throws(() => requireFinance({ id: 'x', role: r }), { status: 403, code: 'forbidden' });
+  }
+  assert.throws(() => requireFinance(undefined), { status: 403 });
 });
 
 test('role comparisons live only in authz.ts', () => {

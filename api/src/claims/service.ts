@@ -122,6 +122,31 @@ export async function listApprovals(d: ClaimDeps, userId: string, q: { limit?: u
   });
 }
 
+// E-36: whole-queue totals come from one aggregate (not the page); items ordered by approval time (updatedAt).
+export async function listPayments(d: ClaimDeps, q: { limit?: unknown; offset?: unknown }) {
+  const { take, skip } = parsePage(q);
+  const [rows, cats, agg] = await Promise.all([
+    d.prisma.claim.findMany({
+      where: { status: 'ready_to_pay' }, orderBy: [{ updatedAt: 'asc' }, { id: 'asc' }], take, skip,
+      select: {
+        id: true, title: true, updatedAt: true, submittedAt: true, claimant: { select: { id: true, name: true } },
+        lines: { select: { amountCents: true, categoryCode: true, limitCents: true, duplicateClaimId: true, duplicateBasis: true } },
+      },
+    }),
+    d.prisma.category.findMany({ select: { code: true, limitCents: true } }),
+    d.prisma.$queryRaw<{ n: bigint | number; t: bigint | number | null }[]>`SELECT COUNT(DISTINCT c."id") AS n, SUM(l."amountCents") AS t FROM "Claim" c LEFT JOIN "ClaimLine" l ON l."claimId" = c."id" WHERE c."status" = 'ready_to_pay'`,
+  ]);
+  const limits = new Map(cats.map((x) => [x.code, x.limitCents]));
+  const items = rows.map((r) => {
+    const fl = r.lines.map((l) => lineFlags(l, limits));
+    return {
+      id: r.id, title: r.title, claimant: r.claimant, readyAt: r.updatedAt, submittedAt: r.submittedAt,
+      totalCents: r.lines.reduce((s, l) => s + l.amountCents, 0), lineCount: r.lines.length, overLimitCount: fl.filter((f) => f.overLimit).length, duplicateCount: fl.filter((f) => f.duplicate).length,
+    };
+  });
+  return { count: Number(agg[0].n), totalCents: Number(agg[0].t ?? 0), items };
+}
+
 // E-22. One query (no N+1); 404 before 403 (architecture section 6).
 export async function getClaim(d: ClaimDeps, user: { id: string; role: string } | undefined, id: string) {
   const c = await d.prisma.claim.findUnique({

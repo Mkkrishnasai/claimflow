@@ -1,0 +1,58 @@
+import { test, before, after } from 'node:test';
+import assert from 'node:assert/strict';
+import type { Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import bcrypt from 'bcryptjs';
+import { PrismaClient } from '@prisma/client';
+import { createApp } from '../../api/src/app.js';
+import { createLogger } from '../../api/src/logger.js';
+
+const PW = 'correct horse battery';
+const prisma = new PrismaClient();
+let srv: Server, base: string;
+const wipe = async () => {
+  await prisma.claimLine.deleteMany(); await prisma.claim.deleteMany(); await prisma.session.deleteMany();
+  await prisma.user.updateMany({ data: { managerId: null } }); await prisma.user.deleteMany();
+};
+
+before(async () => {
+  await wipe();
+  const passwordHash = await bcrypt.hash(PW, 4);
+  await prisma.user.createMany({ data: [{ id: 'emp', role: 'employee' as const }, { id: 'fin', role: 'finance' as const }].map((u) => ({ ...u, email: `${u.id}@claimflow.test`, name: u.id, passwordHash })) });
+  const now = Date.now();
+  const rows = Array.from({ length: 10_000 }, (_, i) => ({
+    id: `c${i}`, claimantId: 'emp', title: `t${i}`, purpose: 'purpose text', status: (i < 2000 ? 'ready_to_pay' : 'submitted') as 'ready_to_pay', createdAt: new Date(now), updatedAt: new Date(now + i), submittedAt: new Date(now + i),
+  }));
+  for (let i = 0; i < rows.length; i += 1000) await prisma.claim.createMany({ data: rows.slice(i, i + 1000) });
+  // One 1,000,000-cent line per queue claim: 2,000 x 1e6 = 2e9, then one more line pushes the sum past 2^31.
+  const lines = rows.slice(0, 2000).map((c, i) => ({ id: `l${i}`, claimId: c.id, position: 1, date: '2026-03-01', categoryCode: 'meals', amountCents: 1_000_000, description: 'x' }));
+  lines.push({ id: 'lx', claimId: 'c0', position: 2, date: '2026-03-01', categoryCode: 'meals', amountCents: 200_000_000, description: 'x' });
+  for (let i = 0; i < lines.length; i += 1000) await prisma.claimLine.createMany({ data: lines.slice(i, i + 1000) });
+  srv = createApp({ log: createLogger({ write: () => true }), deps: { prisma, clock: () => new Date(), mailer: {} as never, publicBaseUrl: 'http://app.test' } }).listen(0, '127.0.0.1');
+  await new Promise((r) => srv.once('listening', r));
+  base = `http://127.0.0.1:${(srv.address() as AddressInfo).port}`;
+});
+after(async () => { srv.close(); await wipe(); await prisma.$disconnect(); });
+
+test('NFR-PERF-1 GET /api/payments default page p95 under 1000 ms over 20 runs; totals above 2^31 exact', async () => {
+  const pre = await fetch(`${base}/api/auth/csrf`);
+  const token = ((await pre.json()) as { csrfToken: string }).csrfToken;
+  const r = await fetch(`${base}/api/auth/sign-in`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-csrf-token': token, cookie: pre.headers.getSetCookie()[0].split(';')[0] },
+    body: JSON.stringify({ email: 'fin@claimflow.test', password: PW }),
+  });
+  const cookie = r.headers.getSetCookie().find((c) => c.startsWith('sid='))!.split(';')[0];
+  const times: number[] = [];
+  for (let i = 0; i < 20; i++) {
+    const t = performance.now();
+    const res = await fetch(`${base}/api/payments`, { headers: { cookie } });
+    const j = (await res.json()) as { count: number; totalCents: number; items: unknown[] };
+    assert.equal(res.status, 200);
+    assert.equal(j.items.length, 50); assert.equal(j.count, 2000);
+    assert.equal(j.totalCents, 2_200_000_000); assert.ok(j.totalCents > 2 ** 31);
+    times.push(performance.now() - t);
+  }
+  times.sort((a, b) => a - b);
+  assert.ok(times[Math.floor(times.length * 0.95)] < 1000);
+});
