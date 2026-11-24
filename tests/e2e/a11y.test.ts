@@ -322,6 +322,8 @@ test('CLAIM-4-S5 failures list, flags and justification field at 360 px', async 
   await clean(page, 'detail with flag');
 });
 
+const plain0 = (page: import('@playwright/test').Page, id: string) => page.locator('ul.cards > li').filter({ has: page.locator(`a[href="/approvals/${id}"]`) });
+
 test('CLAIM-5-S5 approvals inbox: cards, flags, receipts, nav, a11y at 360 px', async () => {
   const s = await apiAs('employee@claimflow.test', PW);
   const h = { 'content-type': 'application/json', 'x-csrf-token': s.csrf, cookie: s.cookie };
@@ -351,6 +353,10 @@ test('CLAIM-5-S5 approvals inbox: cards, flags, receipts, nav, a11y at 360 px', 
   await card.getByText('Over limit (1)').waitFor();
   await card.getByText('Possible duplicate (1)').waitFor();
   await card.getByText('First approval').waitFor();
+  await card.getByText('Submitted', { exact: true }).waitFor();
+  await plain0(page, first.id).getByText('Submitted', { exact: true }).waitFor();
+  await page.locator('.summary').getByText('Waiting', { exact: true }).waitFor();
+  assert.match((await page.locator('.summary .num').innerText()).trim(), /^EUR \d+\.\d\d$/);
   await card.getByText('Employee', { exact: true }).waitFor();
   assert.equal(await card.getByRole('link', { name: /^Receipt/ }).getAttribute('href'), `/api/claims/${second.id}/receipts/${receipt}`);
   const plain = page.locator('ul.cards > li').filter({ has: page.locator(`a[href="/approvals/${first.id}"]`) });
