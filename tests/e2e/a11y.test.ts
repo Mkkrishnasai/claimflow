@@ -259,6 +259,10 @@ test('S10 claim detail: content, actions, no-manager, errors, a11y at 360 px', a
   await page.getByRole('button', { name: 'Submit' }).waitFor();
   assert.equal(await page.locator('ol.plain li').count(), 2);
   assert.equal(await page.getByRole('button', { name: 'Delete' }).count(), 0); // has history
+  // withdrawn: Draft badge, readable timeline, no raw status/action values
+  assert.equal(await page.locator('.badge', { hasText: /^Draft$/ }).count(), 1);
+  assert.match(await page.locator('ol.plain li').last().innerText(), /: Withdrawn \(Submitted to Draft\)/);
+  assert.doesNotMatch(await page.locator('main, section').first().innerText(), /\b(submitted|ready_to_pay|approve_first|withdraw)\b(?!.*\()/);
 
   // no manager: Submit disabled with the explanation
   const sm = await signIn('senior.manager@claimflow.test');
@@ -297,7 +301,7 @@ test('CLAIM-4-S5 failures list, flags and justification field at 360 px', async 
   assert.equal(await alert.locator('li').count(), 4);
   for (const t of await alert.locator('li').allInnerTexts()) assert.match(t, /^(Line \d+|Claim)/);
   assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('role')), 'alert');
-  assert.equal(await page.getByText('draft', { exact: true }).count(), 1);
+  assert.equal(await page.getByText('Draft', { exact: true }).count(), 1);
   await clean(page, 'refused submit');
 
   // editor: justification field appears above the limit
@@ -394,12 +398,12 @@ test('CLAIM-5-S6 review screen: read-only, reject error focus, approve, a11y at 
   await page.getByRole('button', { name: 'Reject' }).click();
   await page.getByRole('alert').waitFor();
   assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('role')), 'alert');
-  await page.getByText('submitted', { exact: true }).waitFor();
+  await page.getByText('Submitted', { exact: true }).waitFor();
   await clean(page, 'review with flag and error');
 
   await page.getByLabel('Reason for rejection').fill('Receipt does not match the amount');
   await page.getByRole('button', { name: 'Reject' }).click();
-  await page.getByText('rejected', { exact: true }).waitFor();
+  await page.getByText('Rejected', { exact: true }).waitFor();
   assert.equal(await page.getByRole('button', { name: 'Approve' }).count(), 0);
 
   // the claimant sees no decision controls
@@ -494,12 +498,12 @@ test('CLAIM-6-S7 payment screen: controls, send-back error focus, pay, own claim
   await page.getByRole('button', { name: 'Send back' }).click();
   await page.getByRole('alert').waitFor();
   assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('role')), 'alert');
-  await page.getByText('ready_to_pay', { exact: true }).waitFor();
+  await page.getByText('Ready to pay', { exact: true }).waitFor();
   await clean(page, 'payment screen with error');
 
   await page.getByLabel('Reason for sending back').fill('Receipt does not match the amount');
   await page.getByRole('button', { name: 'Send back' }).click();
-  await page.getByText('rejected', { exact: true }).waitFor();
+  await page.getByText('Rejected', { exact: true }).waitFor();
   assert.equal(await page.getByRole('button', { name: 'Mark paid' }).count(), 0);
 
   await page.goto(`${WEB}/payments/${pay}`);
@@ -507,7 +511,7 @@ test('CLAIM-6-S7 payment screen: controls, send-back error focus, pay, own claim
   await page.getByLabel('Payment date').fill(today);
   await page.getByLabel('Payment reference').fill('INV-0042');
   await page.getByRole('button', { name: 'Mark paid' }).dblclick();
-  await page.getByText('paid', { exact: true }).waitFor();
+  await page.getByText('Paid', { exact: true }).waitFor();
   await page.getByText('INV-0042').waitFor();
   assert.equal(await page.getByRole('button', { name: /Mark paid|Send back/ }).count(), 0);
 

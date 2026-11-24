@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, ApiError, type Failure, type SessionUser } from '../api';
 import { formatCents } from '../money';
+import { FlagBadge, StatusBadge } from '../ui/components';
+import { actionLabel, statusLabel } from '../ui/labels';
 
 interface Receipt { id: string; originalName: string | null }
 interface Line { id: string; date: string; categoryCode: string; amountCents: number; description: string; justification: string | null; overLimit: boolean; duplicate: { claimId: string; basis: string } | null; receipts: Receipt[] }
@@ -64,7 +66,8 @@ export default function ClaimDetail({ id, viewer, go, back = '/claims' }: { id: 
       <h1 tabIndex={-1}>{c.title}</h1>
       <dl>
         {c.claimant && <><dt>Claimant</dt><dd>{c.claimant.name}</dd></>}
-        <dt>Status</dt><dd>{c.status}</dd>
+        <dt>Status</dt><dd><StatusBadge status={c.status} /></dd>
+        <dt>Total</dt><dd>{formatCents(c.totalCents)}</dd>
         <dt>Purpose</dt><dd>{c.purpose}</dd>
         {c.payment && <><dt>Payment date</dt><dd>{c.payment.date}</dd><dt>Payment reference</dt><dd>{c.payment.reference}</dd></>}
       </dl>
@@ -75,16 +78,15 @@ export default function ClaimDetail({ id, viewer, go, back = '/claims' }: { id: 
             <dl>
               <dt>Date</dt><dd>{l.date}</dd>
               <dt>Category</dt><dd>{l.categoryCode}</dd>
-              <dt>Amount</dt><dd>{formatCents(l.amountCents)}{l.overLimit && <> <strong className="flag">Over limit</strong></>}</dd>
+              <dt>Amount</dt><dd>{formatCents(l.amountCents)}{l.overLimit && <> <FlagBadge>Over limit</FlagBadge></>}</dd>
               <dt>Description</dt><dd>{l.description}</dd>
               {l.justification && <><dt>Justification</dt><dd>{l.justification}</dd></>}
-              {l.duplicate && <><dt>Flag</dt><dd><strong className="flag">Possible duplicate ({l.duplicate.basis === 'receipt' ? 'same receipt file' : 'same date, category and amount'})</strong> <a href={`/claims/${l.duplicate.claimId}`}>View earlier claim</a></dd></>}
+              {l.duplicate && <><dt>Flag</dt><dd><FlagBadge>Possible duplicate ({l.duplicate.basis === 'receipt' ? 'same receipt file' : 'same date, category and amount'})</FlagBadge> <a href={`/claims/${l.duplicate.claimId}`}>View earlier claim</a></dd></>}
               {l.receipts.length > 0 && <><dt>Receipts</dt><dd>{l.receipts.map((r) => <a key={r.id} className="block" href={`/api/claims/${c.id}/receipts/${r.id}`}>{r.originalName ?? 'Receipt'}</a>)}</dd></>}
             </dl>
           </li>
         ))}
       </ul>
-      <p><strong>Total: {formatCents(c.totalCents)}</strong></p>
       <div>
         {canSubmit && <button type="button" disabled={!hasManager} aria-describedby={hasManager ? undefined : 'no-mgr'} onClick={() => run(() => api(`/claims/${id}/submit`, 'POST'))}>Submit</button>}
         {canSubmit && !hasManager && <p id="no-mgr">{NO_MANAGER}</p>}
@@ -124,8 +126,8 @@ export default function ClaimDetail({ id, viewer, go, back = '/claims' }: { id: 
       <h2>History</h2>
       {c.history.length === 0 ? <p>No history yet</p> : (
         <ol className="plain">
-          {c.history.map((h) => (
-            <li key={h.seq}>{h.actor.name}: {h.action} ({h.fromStatus} to {h.toStatus}) on {new Date(h.at).toLocaleString()}{h.reason ? `. Reason: ${h.reason}` : ''}</li>
+          {[...c.history].sort((a, b) => a.seq - b.seq).map((h) => (
+            <li key={h.seq}>{h.actor.name}: {actionLabel(h.action)} ({statusLabel(h.fromStatus)} to {statusLabel(h.toStatus)}) on {new Date(h.at).toLocaleString()}{h.reason ? `. Reason: ${h.reason}` : ''}</li>
           ))}
         </ol>
       )}
