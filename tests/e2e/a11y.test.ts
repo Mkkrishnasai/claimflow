@@ -1,7 +1,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { WEB, PW, NEW_PW, startStack, stopStack, apiAs, mailLink, phone, clean } from './stack.helpers.js';
+import { WEB, PW, NEW_PW, startStack, stopStack, apiAs, mailLink, phone, clean, ROUTES, visitRoutes } from './stack.helpers.js';
 
 before(startStack);
 after(stopStack);
@@ -603,9 +603,6 @@ test('CLAIM-7-S9 export screen: download, range validity, failure, access, a11y 
 });
 
 // CLAIM-9-S3: every route, strict axe, 360 px, one visible label per input.
-// ponytail: ROUTES is the single list; paths in App.tsx are scanned as text by one regex.
-const ROUTES = ['/sign-in', '/set-password', '/reset-password', '/forgot-password', '/claims', '/claims/new', '/claims/:id/edit', '/claims/:id', '/approvals', '/approvals/:id', '/payments', '/payments/:id', '/policy', '/export', '/users', '/users/:id', '/no-such-page'];
-
 test('AC-5 every path in App.tsx is in ROUTES', () => {
   const src = readFileSync(new URL('../../web/src/App.tsx', import.meta.url), 'utf8');
   const found = [...src.matchAll(/path === '([^']+)'|\.match\(\/\^([^$]+)\$\//g)].map((m) => m[1] ?? m[2].replaceAll('\\/', '/').replaceAll('([^/]+)', ':id'));
@@ -613,47 +610,11 @@ test('AC-5 every path in App.tsx is in ROUTES', () => {
   assert.deepEqual(found.filter((p) => !ROUTES.includes(p)), [], 'route in App.tsx missing from ROUTES');
 });
 
-test('AC-2/3/4 strict axe, no horizontal scroll and one label per input on every route', async () => {
-  const today = new Date().toISOString().slice(0, 10);
-  const login = async (who: string) => { const s = await apiAs(`${who}@claimflow.test`, PW); return { s, h: { 'content-type': 'application/json', 'x-csrf-token': s.csrf, cookie: s.cookie } }; };
-  const emp = await login('employee');
-  const mgr = await login('manager');
-  const cat = ((await (await fetch(`${WEB}/api/categories`, { headers: { cookie: emp.s.cookie } })).json()) as { code: string }[])[0];
-  const mk = async (step: 'draft' | 'submit' | 'approve') => {
-    const body = { title: 'Sweep trip', purpose: 'Client workshop in Berlin', lines: [{ date: today, categoryCode: cat.code, amountCents: 100, description: 'Taxi' }] };
-    const id = ((await (await fetch(`${WEB}/api/claims`, { method: 'POST', headers: emp.h, body: JSON.stringify(body) })).json()) as { id: string }).id;
-    if (step !== 'draft') assert.equal((await fetch(`${WEB}/api/claims/${id}/submit`, { method: 'POST', headers: emp.h })).status, 200);
-    if (step === 'approve') assert.equal((await fetch(`${WEB}/api/claims/${id}/approve`, { method: 'POST', headers: mgr.h })).status, 200);
-    return id;
-  };
-  const claimIds = { draft: await mk('draft'), submitted: await mk('submit'), approved: await mk('approve') };
-  const admin = await login('admin');
-  const adminId = ((await (await fetch(`${WEB}/api/users`, { headers: { cookie: admin.s.cookie } })).json()) as { id: string; role: string }[]).find((u) => u.role === 'admin')!.id;
-  // role that can view each route; auth pages and not-found need no session
-  const role = (r: string) => (/^\/(sign-in|set-password|reset-password|forgot-password)$/.test(r) ? null
-    : r.startsWith('/users') ? 'admin' : r.startsWith('/payments') || r === '/policy' || r === '/export' ? 'finance' : r.startsWith('/approvals') ? 'manager' : 'employee');
-  const pages: Record<string, Awaited<ReturnType<typeof phone>>> = { none: await phone() };
-  for (const r of ['admin', 'finance', 'manager', 'employee']) {
-    const p = (pages[r] = await phone());
-    await p.goto(WEB + '/sign-in');
-    await p.fill('#email', `${r}@claimflow.test`);
-    await p.fill('#password', PW);
-    await p.press('#password', 'Enter');
-    await p.getByRole('heading').first().waitFor();
-  }
-  for (const route of ROUTES) {
-    const page = pages[role(route) ?? 'none'];
-    const id = route.startsWith('/users') ? adminId : route.startsWith('/payments') ? claimIds.approved : route.startsWith('/approvals') ? claimIds.submitted : claimIds.draft;
-    const hash = route === '/set-password' || route === '/reset-password' ? '#token=x' : '';
-    await page.goto(WEB + route.replace(':id', id) + hash);
-    await page.locator('h1, form, [role=alert]').first().waitFor();
-    await page.waitForLoadState('networkidle');
-    if (route === '/no-such-page') await page.getByRole('alert').first().waitFor();
-    await clean(page, route);
-    const bad = await page.evaluate(() => [...document.querySelectorAll<HTMLInputElement>('input, select, textarea')]
-      .filter((e) => e.type !== 'hidden' && e.getClientRects().length > 0)
-      .filter((e) => e.labels?.length !== 1 || ![...e.labels].every((l) => l.getBoundingClientRect().width > 0 && l.getBoundingClientRect().height > 0))
-      .map((e) => e.id || e.name));
-    assert.deepEqual(bad, [], `${route}: inputs without exactly one visible label`);
-  }
-});
+test('AC-2/3/4 strict axe, no horizontal scroll and one label per input on every route', () => visitRoutes(async (page, route) => {
+  await clean(page, route);
+  const bad = await page.evaluate(() => [...document.querySelectorAll<HTMLInputElement>('input, select, textarea')]
+    .filter((e) => e.type !== 'hidden' && e.getClientRects().length > 0)
+    .filter((e) => e.labels?.length !== 1 || ![...e.labels].every((l) => l.getBoundingClientRect().width > 0 && l.getBoundingClientRect().height > 0))
+    .map((e) => e.id || e.name));
+  assert.deepEqual(bad, [], `${route}: inputs without exactly one visible label`);
+}));
