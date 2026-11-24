@@ -185,3 +185,35 @@ model Policy {
   receiptThresholdCents Int
   secondApprovalCents   Int
 }
+
+enum NotificationKind {
+  approved
+  rejected
+  sent_back
+  paid
+  digest
+}
+
+enum NotificationStatus {
+  pending
+  sent
+  failed
+  skipped
+}
+
+// No FK on userId/claimId (ADR-35); no address, subject or body is stored (ADR-53).
+model Notification {
+  id            String             @id @default(uuid())
+  kind          NotificationKind
+  userId        String
+  claimId       String?
+  eventSeq      Int?
+  dedupeKey     String             @unique
+  status        NotificationStatus @default(pending)
+  attempts      Int                @default(0)
+  createdAt     DateTime           @default(now())
+  nextAttemptAt DateTime
+  sentAt        DateTime?
+
+  @@index([status, nextAttemptAt])
+}
