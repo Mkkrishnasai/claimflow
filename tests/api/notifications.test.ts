@@ -326,3 +326,86 @@ test('S5 AC-4 no file under api/src/claims imports mailer or the dispatcher', ()
   assert.ok(files.length > 0);
   for (const f of files) assert.doesNotMatch(readFileSync(new URL(f, dir), 'utf8'), /from\s+['"][^'"]*(mailer|dispatcher)(\.js)?['"]/, f);
 });
+
+// CLAIM-8-S6: daily digest.
+const D0 = Date.UTC(2026, 0, 5);
+const H = 3_600_000;
+let nowMs = D0 + 8 * H;
+const dsent: { to: string; subject: string; text: string }[] = [];
+let dfail = false;
+const dmailer = { notifyMail: async (to: string, subject: string, text: string) => { if (dfail) throw new Error('down'); dsent.push({ to, subject, text }); } } as never;
+const runD = () => runOnce({ prisma, clock: () => new Date(nowMs), mailer: dmailer, publicBaseUrl: 'http://app.test', log: createLogger({ write: (l: string) => { dlogs.push(l); return true; } }) });
+const waiting = (status = 'submitted', approverId = 'mgr') => prisma.claim.create({ data: { claimantId: 'emp', title: `w${++n}`, purpose: 'purpose text', status: status as never, approverId, createdAt: new Date(), updatedAt: new Date(), submittedAt: new Date(D0),
+  lines: { create: [{ position: 1, date: '2026-01-01', categoryCode: 'meals', amountCents: 1000, description: 'd', limitCents: 5000 }] } } });
+const digests = () => prisma.notification.findMany({ where: { kind: 'digest' } });
+beforeEach(() => { nowMs = D0 + 8 * H; dsent.length = 0; dfail = false; });
+
+test('S6 AC-1 three waiting claims give one email on the first tick at 08:00; later ticks and a restart add nothing', async () => {
+  await waiting(); await waiting('approved'); await waiting();
+  await runD(); nowMs += 30_000; await runD(); await runD();
+  assert.equal(dsent.length, 1);
+  assert.equal(dsent[0].to, 'mgr@claimflow.test');
+  assert.equal(dsent[0].text.split('\n').filter((l) => l.includes('EUR 10.00')).length, 3);
+  assert.deepEqual((await digests()).map((r) => r.dedupeKey), ['digest:mgr:2026-01-05']);
+});
+
+test('S6 AC-2 nothing queued at 07:59, nor for an approver without waiting claims', async () => {
+  await waiting(); nowMs = D0 + 8 * H - 60_000; await runD();
+  assert.equal((await digests()).length, 0);
+  await prisma.claim.updateMany({ data: { status: 'draft' } }); nowMs = D0 + 9 * H; await runD();
+  assert.equal((await digests()).length, 0);
+});
+
+test('S6 AC-3 mailer failing then recovering still yields exactly one summary', async () => {
+  await waiting(); dfail = true; await runD();
+  assert.equal(dsent.length, 0);
+  dfail = false; nowMs += 61_000; await runD(); nowMs += 30_000; await runD();
+  assert.equal(dsent.length, 1);
+  assert.equal((await digests()).length, 1);
+});
+
+test('S6 AC-4 the next UTC date gets a new summary while claims still wait', async () => {
+  await waiting(); await runD();
+  nowMs += 24 * H; await runD();
+  assert.equal(dsent.length, 2);
+  assert.deepEqual((await digests()).map((r) => r.dedupeKey).sort(), ['digest:mgr:2026-01-05', 'digest:mgr:2026-01-06']);
+});
+
+test('S6 AC-5 claim acted on before send leaves the list; empty list is skipped; second stage goes to its own approver', async () => {
+  const a = await waiting(); const b = await waiting('approved', 'adm');
+  await prisma.user.update({ where: { id: 'adm' }, data: { role: 'manager' } });
+  await runD(); // enqueue + send
+  assert.deepEqual(dsent.map((m) => m.to).sort(), ['adm@claimflow.test', 'mgr@claimflow.test']);
+  assert.equal(dsent.find((m) => m.to === 'mgr@claimflow.test')!.text.includes(b.title), false);
+  assert.ok(dsent.find((m) => m.to === 'adm@claimflow.test')!.text.includes(b.title));
+  // new day: the only claim is approved by the time of send
+  dsent.length = 0; dlogs.length = 0; nowMs += 24 * H;
+  await prisma.claim.updateMany({ data: { status: 'rejected' } });
+  await prisma.notification.createMany({ data: [{ kind: 'digest', userId: 'mgr', dedupeKey: 'digest:mgr:x', nextAttemptAt: new Date(0) }] });
+  await runD();
+  const r = await prisma.notification.findUnique({ where: { dedupeKey: 'digest:mgr:x' } });
+  assert.equal(r!.status, 'skipped'); assert.equal(dsent.length, 0);
+  assert.ok(dlogs.some((l) => JSON.parse(l).mailEvent === 'skipped'));
+  assert.ok(a.id);
+});
+
+test('S6 AC-6 only claims waiting on that approver are listed', async () => {
+  const mine = await waiting(); await waiting('submitted', 'adm');
+  await runD();
+  const m = dsent.find((x) => x.to === 'mgr@claimflow.test')!;
+  assert.ok(m.text.includes(mine.title)); assert.ok(m.text.includes('http://app.test/approvals'));
+  assert.equal(m.text.split('\n').filter((l) => l.includes('EUR')).length, 1);
+});
+
+test('S6 AC-7 enqueue for 25 approvers issues at most 3 Notification queries', async () => {
+  await prisma.user.createMany({ data: Array.from({ length: 25 }, (_, i) => ({ id: `a${i}`, email: `a${i}@claimflow.test`, name: `A${i}`, role: 'manager' as const, passwordHash: 'x' })) });
+  for (let i = 0; i < 25; i++) await waiting('submitted', `a${i}`);
+  queries.length = 0;
+  await prisma.notification.deleteMany();
+  queries.length = 0;
+  const before = dsent.length;
+  await runD();
+  const enq = queries.filter((q) => /Notification/.test(q) && /digest|dedupeKey|INSERT/i.test(q) && !/UPDATE|WHERE .*id.*IN/i.test(q));
+  assert.ok(enq.length <= 3, `got ${enq.length}`);
+  assert.equal(dsent.length - before, 25);
+});

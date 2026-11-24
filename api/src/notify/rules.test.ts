@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest';
-import { expired, nextState, oneLine, retryDelay, renderClaimMail, SUBJECT, type ClaimMailInput } from './rules.js';
+import { expired, nextState, oneLine, retryDelay, renderClaimMail, SUBJECT, digestDue, digestKey, renderDigest, type ClaimMailInput } from './rules.js';
 
 const base: ClaimMailInput = { kind: 'approved', claimId: 'c1', title: 'Taxi', totalCents: 12550, actorName: 'Mia', reason: null, paymentDate: null, paymentReference: null, publicBaseUrl: 'http://app.test' };
 
@@ -36,4 +36,21 @@ test('injected title stays on one line', () => {
   const t = renderClaimMail({ ...base, title: 'x\r\nBcc: a@b.test' }).text;
   expect(t).toContain('Claim: x Bcc: a@b.test\n');
   expect(t).not.toMatch(/\r|\n(Bcc)/);
+});
+
+test('digestDue is true from 08:00 UTC; digestKey uses the UTC date', () => {
+  expect([digestDue(new Date('2026-01-01T07:59:59Z')), digestDue(new Date('2026-01-01T08:00:00Z'))]).toEqual([false, true]);
+  expect(digestKey('u1', new Date('2026-01-01T23:30:00Z'))).toBe('digest:u1:2026-01-01');
+});
+
+test('renderDigest lists claims and the approvals link; 101 gives 100 lines and "and 1 more"', () => {
+  const item = (i: number) => ({ claimant: `Ann${i}`, title: 'Taxi\r\nBcc: x', totalCents: 12550, submittedAt: new Date('2026-01-02T10:00:00Z') });
+  const three = renderDigest([1, 2, 3].map(item), 3, 'http://app.test');
+  expect(three.subject).toBe('Claims waiting for your approval');
+  expect(three.text.split('\n').filter((l) => l.includes('EUR 125.50 | 2026-01-02'))).toHaveLength(3);
+  expect(three.text).toContain('Ann1 | Taxi Bcc: x');
+  expect(three.text).toContain('http://app.test/approvals');
+  const many = renderDigest(Array.from({ length: 100 }, (_, i) => item(i)), 101, 'http://app.test');
+  expect(many.text.split('\n').filter((l) => l.includes('EUR 125.50'))).toHaveLength(100);
+  expect(many.text).toContain('and 1 more');
 });

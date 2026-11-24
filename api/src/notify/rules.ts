@@ -32,3 +32,18 @@ export function renderClaimMail(i: ClaimMailInput): { subject: string; text: str
   lines.push(`${i.publicBaseUrl}/claims/${i.claimId}`);
   return { subject: SUBJECT[i.kind], text: lines.join('\n') + '\n' };
 }
+
+// C-39 digest (FR-2). Due from 08:00 UTC; one key per approver per UTC date (NFR-REL-3).
+export const DIGEST_SUBJECT = 'Claims waiting for your approval';
+export const DIGEST_MAX = 100;
+export const digestDue = (now: Date): boolean => now.getUTCHours() >= 8;
+export const digestKey = (userId: string, now: Date): string => `digest:${userId}:${now.toISOString().slice(0, 10)}`;
+
+export interface DigestItem { claimant: string; title: string; totalCents: number; submittedAt: Date | null }
+// `items` holds at most DIGEST_MAX claims; `total` is the full waiting count.
+export function renderDigest(items: DigestItem[], total: number, publicBaseUrl: string): { subject: string; text: string } {
+  const lines = items.slice(0, DIGEST_MAX).map((c) => `${oneLine(c.claimant)} | ${oneLine(c.title)} | EUR ${euro(c.totalCents)} | ${c.submittedAt ? c.submittedAt.toISOString().slice(0, 10) : '-'}`);
+  if (total > DIGEST_MAX) lines.push(`and ${total - DIGEST_MAX} more`);
+  lines.push(`${publicBaseUrl}/approvals`);
+  return { subject: DIGEST_SUBJECT, text: lines.join('\n') + '\n' };
+}
