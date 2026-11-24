@@ -55,6 +55,11 @@ Stop with Ctrl-C (SIGINT; SIGTERM and SIGHUP behave the same): every service the
 - `npx playwright install chromium`: one-off download needed before `npm run test:e2e` (browser and accessibility tests).
 - Demo browser: use Chromium or Firefox for manual demos; the accessibility tests run on Chromium at 360x740.
 
+## Third-party licences
+
+- [Lucide](https://lucide.dev) icons via `lucide-react`: ISC.
+- [Inter](https://rsms.me/inter/) font: SIL Open Font License 1.1 (`OFL.txt`).
+
 ## Ports
 
 | Port | Service |
