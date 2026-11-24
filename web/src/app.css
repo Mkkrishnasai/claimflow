@@ -40,3 +40,34 @@ dl { overflow-wrap: anywhere; }
 dt { font-weight: 600; margin-top: var(--space-1); }
 a.block { display: block; padding: var(--space-1) 0; min-height: var(--target); }
 .badge { display: inline-block; padding: 0 var(--space-1); border-radius: var(--radius-pill); font-size: var(--fs-small); font-weight: var(--fw-small); }
+
+/* C-50 shared components. 768px here matches WIDE in ui/components.tsx. */
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: var(--space-1); }
+.btn--secondary, a.button.btn--secondary { color: var(--text); background: transparent; border: 1px solid var(--muted); }
+.btn--secondary:hover, a.button.btn--secondary:hover { color: var(--text); background: var(--bg); }
+.btn--danger, a.button.btn--danger { color: var(--on-primary); background: var(--danger); }
+.btn--danger:hover, a.button.btn--danger:hover { color: var(--on-primary); background: var(--danger); filter: brightness(.9); }
+.field .hint { margin: var(--space-1) 0 0; color: var(--text-2); font-size: var(--fs-small); }
+.field .error { margin: var(--space-1) 0 0; }
+.field input.attention, .field select.attention, .field textarea.attention { border-color: var(--warning); }
+.field input[aria-invalid='true'], .field select[aria-invalid='true'], .field textarea[aria-invalid='true'] { border-color: var(--danger); }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-card); box-shadow: var(--shadow-card); padding: var(--space-3); }
+.badge--draft { color: var(--badge-draft-fg); background: var(--badge-draft-bg); }
+.badge--submitted { color: var(--badge-submitted-fg); background: var(--badge-submitted-bg); }
+.badge--approved { color: var(--badge-approved-fg); background: var(--badge-approved-bg); }
+.badge--rejected { color: var(--badge-rejected-fg); background: var(--badge-rejected-bg); }
+.badge--ready { color: var(--badge-ready-fg); background: var(--badge-ready-bg); }
+.badge--paid { color: var(--badge-paid-fg); background: var(--badge-paid-bg); }
+.badge--flag { display: inline-flex; align-items: center; gap: 4px; color: var(--badge-flag-fg); background: var(--badge-flag-bg); }
+.alert { margin-top: var(--space-2); padding: var(--space-1) var(--space-2); border: 1px solid currentColor; border-radius: var(--radius-input); }
+.alert--info { color: var(--text); background: var(--surface); border-color: var(--muted); }
+.alert--success { color: var(--success); }
+.empty { margin-top: var(--space-3); padding: var(--space-3); text-align: center; color: var(--text-2); border: 1px dashed var(--border); border-radius: var(--radius-card); }
+.page-header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-1) var(--space-2); }
+table.table { width: 100%; border-collapse: collapse; margin-top: var(--space-2); }
+table.table th, table.table td { padding: var(--space-1) var(--space-2); text-align: left; border-bottom: 1px solid var(--border); }
+table.table th { color: var(--text-2); font-size: var(--fs-small); font-weight: 600; }
+table.table tbody tr { transition: background-color var(--motion); }
+table.table tbody tr:hover { background: var(--bg); }
+.num { text-align: right; font-variant-numeric: tabular-nums; }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; animation: none !important; } }
