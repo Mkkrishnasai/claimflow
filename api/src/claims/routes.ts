@@ -5,7 +5,7 @@ import { mount, requireFinance, type RouteDef } from '../auth/authz.js';
 import { HttpError } from '../middleware.js';
 import { SubmitRefused } from './policy.js';
 import { sniff } from './receipt-storage.js';
-import { addLine, approveClaim, addReceiptRow, precheckReceipt, createClaim, deleteClaim, deleteLine, deleteReceipt, receiptForRead, editClaim, editLine, getClaim, listApprovals, listCategories, listMine, listPayments, payClaim, rejectClaim, sendBackClaim, submitClaim, withdrawClaim, type ClaimDeps } from './service.js';
+import { addLine, approveClaim, addReceiptRow, precheckReceipt, createClaim, deleteClaim, deleteLine, deleteReceipt, receiptForRead, editClaim, editLine, getClaim, listApprovals, listCategories, exportPaidClaims, listMine, listPayments, payClaim, rejectClaim, sendBackClaim, submitClaim, withdrawClaim, type ClaimDeps } from './service.js';
 
 export const claimRouteDefs = (d: ClaimDeps): RouteDef[] => [
   // E-19
@@ -27,6 +27,14 @@ export const claimRouteDefs = (d: ClaimDeps): RouteDef[] => [
     if (!req.user) throw new HttpError(401, 'unauthenticated');
     requireFinance(req.user);
     res.json(await listPayments(d, req.query));
+  } },
+  // E-41: finance only; no row content is logged
+  { method: 'get', path: '/exports/paid-claims.csv', data: 'claim', write: false, handler: async (req, res) => {
+    if (!req.user) throw new HttpError(401, 'unauthenticated');
+    requireFinance(req.user);
+    const { csv, rows, from, to } = await exportPaidClaims(d, req.query);
+    res.locals.logFields = { export: 'paid_claims', from, to, rows };
+    res.set({ 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="paid-claims-${from}-to-${to}.csv"`, 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' }).send(csv);
   } },
   // E-21
   { method: 'post', path: '/claims', data: 'claim', write: true, handler: async (req, res) => {
