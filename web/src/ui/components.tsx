@@ -1,11 +1,11 @@
 import { Fragment, useSyncExternalStore, type AnchorHTMLAttributes, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type Ref, type SelectHTMLAttributes, type TextareaHTMLAttributes } from 'react';
-import { TriangleAlert } from 'lucide-react';
+import { ListChecks, TriangleAlert, Upload, Wallet } from 'lucide-react';
 import { statusInfo } from './labels';
 
 const cx = (...c: (string | false | undefined)[]) => c.filter(Boolean).join(' ');
 
 // ---- Button ----
-type Variant = 'primary' | 'secondary' | 'danger';
+type Variant = 'primary' | 'secondary' | 'danger' | 'ghost';
 type ButtonProps = { variant?: Variant; icon?: ReactNode } & (
   | ({ href?: undefined } & ButtonHTMLAttributes<HTMLButtonElement>)
   | ({ href: string } & AnchorHTMLAttributes<HTMLAnchorElement>)
@@ -76,8 +76,27 @@ export function Alert({ role = 'alert', tone = 'danger', className, children, ..
   return <div {...rest} role={role} className={cx('alert', `alert--${tone}`, tone === 'danger' && 'error', className)}>{children}</div>;
 }
 export const EmptyState = ({ text, action }: { text: string; action?: ReactNode }) => <div className="empty"><p>{text}</p>{action}</div>;
-export const PageHeader = ({ title, meta, actions, focusable = true }: { title: string; meta?: ReactNode; actions?: ReactNode; focusable?: boolean }) => (
-  <header className="page-header"><h1 tabIndex={focusable ? -1 : undefined}>{title}</h1>{meta}{actions}</header>
+export const PageHeader = ({ title, eyebrow, subtitle, meta, actions, focusable = true }: { title: string; eyebrow?: string; subtitle?: string; meta?: ReactNode; actions?: ReactNode; focusable?: boolean }) => (
+  <header className="page-header">
+    <div className="page-header__text">
+      {eyebrow && <span className="page-header__eyebrow">{eyebrow}</span>}
+      <h1 tabIndex={focusable ? -1 : undefined}>{title}</h1>
+      {subtitle && <p className="page-header__sub">{subtitle}</p>}
+      {meta}
+    </div>
+    {actions}
+  </header>
+);
+
+// Summary tiles above lists. Values come from data the screen already loaded.
+export type TileTone = 'violet' | 'blue' | 'teal' | 'green' | 'amber';
+// Markup stays dl.summary > div > dt + dd (tests read it); `money` adds class num.
+export const Tiles = ({ items }: { items: { label: string; value: ReactNode; sub?: string; money?: boolean; tone: TileTone }[] }) => (
+  <dl className="summary tiles">
+    {items.map((t) => (
+      <div key={t.label} className={`tile tile--${t.tone}`}><dt>{t.label}</dt><dd className={t.money ? 'num' : undefined}>{t.value}</dd>{t.sub && <dd className="tile__sub">{t.sub}</dd>}</div>
+    ))}
+  </dl>
 );
 
 // ---- Table: <table> at >= 768 px, today's ul.cards markup below. Keep 768 in sync with app.css. ----
@@ -118,3 +137,19 @@ export function fieldErrors(form: HTMLFormElement) {
   }
   return { errors, first };
 }
+
+// Brand panel on the account screens (hidden below 768px by app.css; decorative, so aria-hidden).
+export const AuthAside = () => (
+  <aside className="auth__aside" aria-hidden="true">
+    <p className="brand"><span className="brand__mark" />ClaimFlow</p>
+    <div>
+      <p className="auth__headline">Expense claims, approved and paid in days, not weeks.</p>
+      <ol className="journey">
+        <li><span className="icon-tile"><Upload size={17} /></span><span><strong>Submit with receipts</strong><span>Policy checks run before it leaves you</span></span></li>
+        <li><span className="icon-tile"><ListChecks size={17} /></span><span><strong>Manager approves</strong><span>Flags for over-limit and duplicates</span></span></li>
+        <li><span className="icon-tile"><Wallet size={17} /></span><span><strong>Finance pays</strong><span>Every step recorded in the history</span></span></li>
+      </ol>
+    </div>
+    <p className="auth__foot">Employee · Manager · Finance</p>
+  </aside>
+);

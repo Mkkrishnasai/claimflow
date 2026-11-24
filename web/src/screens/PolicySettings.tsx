@@ -59,10 +59,10 @@ export default function PolicySettings() {
 
   return (
     <section>
-      <PageHeader title="Policy settings" />
+      <PageHeader eyebrow="Finance" title="Policy settings" subtitle="Category limits and approval thresholds." />
       {loadError && <Alert>{loadError}</Alert>}
       {policy && (
-        <form onSubmit={save} noValidate>
+        <form onSubmit={save} noValidate className="card">
           <p>Changes apply to claims submitted from now on. Claims already submitted keep their current values.</p>
           {policy.categories.map((c) => field(c.code, `${c.label} limit (EUR)`))}
           {field(RECEIPT, 'Receipt required from (EUR)')}

@@ -14,15 +14,15 @@ export default function UsersList() {
 
   return (
     <section>
-      <PageHeader title="Users" />
+      <PageHeader eyebrow="Admin" title="Users" subtitle="Accounts, roles and who reports to whom." />
       {error && <Alert>{error}</Alert>}
-      {users && <Table<ListUser> rowKey={(u) => u.id} rows={users} columns={[
+      {users && <div className="panel"><div className="table-scroll"><Table<ListUser> rowKey={(u) => u.id} rows={users} columns={[
         { key: 'name', header: 'Name', primary: true, cell: (u) => <a href={`/users/${u.id}`}>{u.name}</a> },
         { key: 'email', header: 'Email', cell: (u) => u.email },
         { key: 'role', header: 'Role', cell: (u) => u.role },
         { key: 'manager', header: 'Manager', cell: (u) => <>{u.managerName ?? 'None'}{u.managerInactive && <FlagBadge>(manager inactive)</FlagBadge>}</> },
         { key: 'state', header: 'State', cell: (u) => (u.active ? 'Active' : 'Inactive') },
-      ]} />}
+      ]} /></div></div>}
     </section>
   );
 }

@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { api } from '../api';
-import { Alert, Button, Card, PageHeader, TextField, fieldErrors } from '../ui/components';
+import { Alert, AuthAside, Button, Card, PageHeader, TextField, fieldErrors } from '../ui/components';
 
 export default function ForgotPassword() {
   const [email, setEmail] = useState('');
@@ -24,7 +24,7 @@ export default function ForgotPassword() {
 
   return (
     <main className="auth">
-      <aside className="auth__aside" aria-hidden="true"><p>ClaimFlow</p></aside>
+      <AuthAside />
       <div className="auth__panel">
         <Card>
           <PageHeader title="Forgot password" />

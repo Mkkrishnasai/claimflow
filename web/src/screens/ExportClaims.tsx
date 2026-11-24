@@ -50,10 +50,10 @@ export default function ExportClaims() {
 
   return (
     <section>
-      <PageHeader title="Export paid claims" />
+      <PageHeader eyebrow="Finance" title="Export paid claims" subtitle="Download paid claims for a date range as CSV." />
       {error && <Alert>{error}</Alert>}
       {allowed && (
-        <form onSubmit={download}>
+        <form onSubmit={download} className="card">
           <DateField id="x-from" label="From" value={from} max={to || undefined} onChange={(e) => setFrom(e.target.value)} />
           <DateField id="x-to" label="To" value={to} min={from || undefined} onChange={(e) => setTo(e.target.value)} />
           <Button type="submit" disabled={!valid || busy}>Download CSV</Button>
