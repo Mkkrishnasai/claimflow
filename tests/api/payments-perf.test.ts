@@ -33,6 +33,8 @@ before(async () => {
   const lines = rows.slice(0, 2000).map((c, i) => ({ id: `l${i}`, claimId: c.id, position: 1, date: '2026-03-01', categoryCode: 'meals', amountCents: 1_000_000, description: 'x' }));
   lines.push({ id: 'lx', claimId: 'c0', position: 2, date: '2026-03-01', categoryCode: 'meals', amountCents: 200_000_000, description: 'x' });
   for (let i = 0; i < lines.length; i += 1000) await prisma.claimLine.createMany({ data: lines.slice(i, i + 1000) });
+  // Pay requires approval history; c1..c20 are the claims the pay test uses.
+  await prisma.claimEvent.createMany({ data: Array.from({ length: 20 }, (_, i) => ({ claimId: `c${i + 1}`, actorId: 'emp', action: 'approve_final', fromStatus: 'submitted', toStatus: 'ready_to_pay', seq: 1, at: new Date() })) });
   srv = createApp({ log: createLogger({ write: () => true }), deps: { prisma, clock: () => new Date(), mailer: {} as never, publicBaseUrl: 'http://app.test' } }).listen(0, '127.0.0.1');
   await new Promise((r) => srv.once('listening', r));
   base = `http://127.0.0.1:${(srv.address() as AddressInfo).port}`;
