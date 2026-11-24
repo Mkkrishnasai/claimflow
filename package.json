@@ -16,7 +16,8 @@
     "screenshots": "node --import tsx tests/e2e/screenshots.ts",
     "seed": "node --import tsx prisma/seed.ts",
     "lint": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p web/tsconfig.json",
-    "build": "vite build --config web/vite.config.ts web"
+    "build": "vite build --config web/vite.config.ts web",
+    "check:bundle": "node scripts/bundle-size.mjs"
   },
   "dependencies": {
     "@prisma/client": "^6.19.3",
