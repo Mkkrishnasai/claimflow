@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api';
 import { formatCents } from '../money';
+import { stageStatus } from '../ui/labels';
+import { Card, EmptyState, FlagBadge, PageHeader, StatusBadge } from '../ui/components';
 
 interface Receipt { id: string; originalName: string | null }
 interface Line { position: number; description: string; amountCents: number; receipts: Receipt[] }
@@ -14,21 +16,28 @@ export default function Approvals() {
 
   return (
     <section>
-      <h1 tabIndex={-1}>Approvals</h1>
+      <PageHeader title="Approvals" />
       {error && <p role="alert" className="error">{error}</p>}
-      {rows?.length === 0 && <p>No claims waiting</p>}
+      {rows?.length === 0 && <EmptyState text="No claims waiting" />}
+      {!!rows?.length && (
+        <dl className="summary">
+          <div><dt>Waiting</dt><dd>{rows.length}</dd></div>
+          <div><dt>Total</dt><dd className="num">{formatCents(rows.reduce((s, c) => s + c.totalCents, 0))}</dd></div>
+        </dl>
+      )}
       <ul className="cards">
         {rows?.map((c) => (
-          <li key={c.id}>
+          <Card as="li" key={c.id}>
             <h2><a href={`/approvals/${c.id}`}>{c.title}</a></h2>
             <dl>
               <dt>Claimant</dt><dd>{c.claimant.name}</dd>
-              <dt>Total</dt><dd>{formatCents(c.totalCents)}</dd>
+              <dt>Total</dt><dd className="num">{formatCents(c.totalCents)}</dd>
               <dt>Stage</dt><dd>{c.stage === 'first' ? 'First approval' : 'Second approval'}</dd>
+              <dt>Status</dt><dd><StatusBadge status={stageStatus(c.stage)} /></dd>
               <dt>Submitted</dt><dd>{new Date(c.submittedAt).toLocaleDateString()}</dd>
             </dl>
-            {c.overLimitCount > 0 && <p>{`Over limit (${c.overLimitCount})`}</p>}
-            {c.duplicateCount > 0 && <p>{`Possible duplicate (${c.duplicateCount})`}</p>}
+            {c.overLimitCount > 0 && <FlagBadge>{`Over limit (${c.overLimitCount})`}</FlagBadge>}
+            {c.duplicateCount > 0 && <FlagBadge>{`Possible duplicate (${c.duplicateCount})`}</FlagBadge>}
             <ol className="plain">
               {c.lines.map((l) => (
                 <li key={l.position}>
@@ -37,7 +46,7 @@ export default function Approvals() {
                 </li>
               ))}
             </ol>
-          </li>
+          </Card>
         ))}
       </ul>
     </section>
