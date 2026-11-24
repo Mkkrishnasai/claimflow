@@ -1,11 +1,11 @@
 import { createHash } from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 import { Router, type Request, type Response } from 'express';
-import { mount, type RouteDef } from '../auth/authz.js';
+import { mount, requireFinance, type RouteDef } from '../auth/authz.js';
 import { HttpError } from '../middleware.js';
 import { SubmitRefused } from './policy.js';
 import { sniff } from './receipt-storage.js';
-import { addLine, approveClaim, addReceiptRow, precheckReceipt, createClaim, deleteClaim, deleteLine, deleteReceipt, receiptForRead, editClaim, editLine, getClaim, listApprovals, listCategories, listMine, rejectClaim, submitClaim, withdrawClaim, type ClaimDeps } from './service.js';
+import { addLine, approveClaim, addReceiptRow, precheckReceipt, createClaim, deleteClaim, deleteLine, deleteReceipt, receiptForRead, editClaim, editLine, getClaim, listApprovals, listCategories, listMine, listPayments, payClaim, rejectClaim, sendBackClaim, submitClaim, withdrawClaim, type ClaimDeps } from './service.js';
 
 export const claimRouteDefs = (d: ClaimDeps): RouteDef[] => [
   // E-19
@@ -21,6 +21,12 @@ export const claimRouteDefs = (d: ClaimDeps): RouteDef[] => [
   { method: 'get', path: '/approvals', data: 'claim', write: false, handler: async (req, res) => {
     if (!req.user) throw new HttpError(401, 'unauthenticated');
     res.json(await listApprovals(d, req.user.id, req.query));
+  } },
+  // E-36: finance only, checked before the page query is parsed
+  { method: 'get', path: '/payments', data: 'claim', write: false, handler: async (req, res) => {
+    if (!req.user) throw new HttpError(401, 'unauthenticated');
+    requireFinance(req.user);
+    res.json(await listPayments(d, req.query));
   } },
   // E-21
   { method: 'post', path: '/claims', data: 'claim', write: true, handler: async (req, res) => {
@@ -83,6 +89,18 @@ export const claimRouteDefs = (d: ClaimDeps): RouteDef[] => [
   // E-35: same authority rules as approve; only `reason` is read from the body
   { method: 'post', path: '/claims/:id/reject', data: 'claim', write: true, handler: async (req, res) => {
     const { claim, ev } = await rejectClaim(d, req.user, req.params.id as string, req.body ?? {});
+    res.locals.logFields = { claimEvent: ev.action, claimId: claim.id, from: ev.from, to: ev.to };
+    res.json(claim);
+  } },
+  // E-37: finance only, authorised in the service; log carries no reference
+  { method: 'post', path: '/claims/:id/pay', data: 'claim', write: true, handler: async (req, res) => {
+    const { claim, ev } = await payClaim(d, req.user, req.params.id as string, req.body ?? {});
+    res.locals.logFields = { claimEvent: ev.action, claimId: claim.id, from: ev.from, to: ev.to };
+    res.json(claim);
+  } },
+  // E-38: finance only, authorised in the service; log carries no reason
+  { method: 'post', path: '/claims/:id/send-back', data: 'claim', write: true, handler: async (req, res) => {
+    const { claim, ev } = await sendBackClaim(d, req.user, req.params.id as string, req.body ?? {});
     res.locals.logFields = { claimEvent: ev.action, claimId: claim.id, from: ev.from, to: ev.to };
     res.json(claim);
   } },

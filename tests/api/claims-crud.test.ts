@@ -162,7 +162,7 @@ const call = (s: S | null, method: string, path: string, body?: unknown, csrf: s
 const mk = async (status: string, claimantId = 'emp', n = 1) => {
   const now = new Date();
   const c = (await prisma.claim.create({ data: { claimantId, title: 't', purpose: 'purpose text', status: 'draft', createdAt: now, updatedAt: now, lines: { create: Array.from({ length: n }, (_, i) => ({ position: i + 1, date: '2026-03-01', categoryCode: 'meals', amountCents: 1000, description: 'd' })) } }, include: { lines: true } }));
-  if (status !== 'draft') await prisma.claim.update({ where: { id: c.id }, data: { status: status as never } }); // lines first: a paid claim refuses inserts
+  if (status !== 'draft') await prisma.claim.update({ where: { id: c.id }, data: { status: status as never, ...(status === 'paid' ? { paymentDate: '2026-11-24', paymentReference: 'INV-0042' } : {}) } }); // lines first: a paid claim refuses inserts
   return c;
 };
 

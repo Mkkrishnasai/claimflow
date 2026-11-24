@@ -53,7 +53,7 @@ async function mk(status: 'draft' | 'paid') {
   const id = `c${++n}`;
   await prisma.claim.create({ data: { id, claimantId: 'emp', title: 'T', purpose: 'Some purpose text', status: 'draft', createdAt: new Date(0), updatedAt: new Date(0), lines: { create: [{ id: `l${n}`, position: 1, date: '2026-03-01', categoryCode: 'meals', amountCents: 1000, description: 'x' }] } } });
   await prisma.receipt.create({ data: { id: `r${n}`, lineId: `l${n}`, claimId: id, storageKey: `k${n}`, sha256: 'a'.repeat(64), sizeBytes: 3, mime: 'image/png', uploadedById: 'emp', uploadedAt: new Date(0) } });
-  if (status === 'paid') await prisma.claim.update({ where: { id }, data: { status: 'paid' } });
+  if (status === 'paid') await prisma.claim.update({ where: { id }, data: { status: 'paid', paymentDate: '2026-11-24', paymentReference: 'INV-0042' } });
   return { id, lineId: `l${n}`, receiptId: `r${n}` };
 }
 const sql = (q: string) => prisma.$executeRawUnsafe(q);
@@ -125,5 +125,15 @@ test('CLAIM-4 S1 submit_policy migration is additive and T1..T10 survive', async
   assert.equal((m.match(/ALTER TABLE "ClaimLine" ADD COLUMN/g) ?? []).length, 3);
   assert.equal((m.match(/CREATE INDEX "ClaimLine_date_categoryCode_amountCents_idx"/g) ?? []).length, 1);
   assert.doesNotMatch(m, /DROP TABLE|PRAGMA foreign_keys|new_ClaimLine/);
-  assert.equal(((await prisma.$queryRawUnsafe(`SELECT name FROM sqlite_master WHERE type = 'trigger'`)) as unknown[]).length, 10);
+  assert.equal(((await prisma.$queryRawUnsafe(`SELECT name FROM sqlite_master WHERE type = 'trigger'`)) as unknown[]).length, 11);
+});
+
+test('CLAIM-6 S1 AC-1/AC-2 paid needs date and reference; payment record then frozen', async () => {
+  const c = await mk('draft');
+  await prisma.claim.update({ where: { id: c.id }, data: { status: 'ready_to_pay' } });
+  await assert.rejects(sql(`UPDATE "Claim" SET status = 'paid' WHERE id = '${c.id}'`), /claim_paid_needs_payment/);
+  await assert.rejects(sql(`UPDATE "Claim" SET status = 'paid', paymentDate = '2026-11-24' WHERE id = '${c.id}'`), /claim_paid_needs_payment/);
+  assert.equal((await prisma.claim.findUniqueOrThrow({ where: { id: c.id } })).status, 'ready_to_pay');
+  await sql(`UPDATE "Claim" SET status = 'paid', paymentDate = '2026-11-24', paymentReference = 'INV-0042' WHERE id = '${c.id}'`);
+  await assert.rejects(sql(`UPDATE "Claim" SET paymentReference = 'X' WHERE id = '${c.id}'`), /claim_paid_no_update/);
 });
