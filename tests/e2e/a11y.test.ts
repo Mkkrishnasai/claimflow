@@ -572,3 +572,47 @@ test('CLAIM-6-S7 payment screen: controls, send-back error focus, pay, own claim
   await emp.getByText('INV-0042').waitFor();
   assert.equal(await emp.getByRole('button', { name: /Mark paid|Send back/ }).count(), 0);
 });
+
+test('CLAIM-7-S8 policy screen: load, validate, save once, access, a11y at 360 px', async () => {
+  const page = await phone();
+  await page.goto(WEB + '/sign-in');
+  await page.fill('#email', 'finance@claimflow.test');
+  await page.fill('#password', PW);
+  await page.press('#password', 'Enter');
+  await page.getByRole('heading', { name: 'My claims' }).waitFor();
+  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Policy' }).click();
+  await page.getByRole('heading', { name: 'Policy settings', level: 1 }).waitFor();
+  await page.getByLabel('Meals limit').waitFor();
+  assert.equal(await page.evaluate(() => document.activeElement?.tagName), 'H1');
+  assert.equal(await page.locator('form input').count(), 8);
+  assert.equal(await page.getByLabel('Meals limit').inputValue(), '50.00');
+  await page.getByText('Changes apply to claims submitted from now on. Claims already submitted keep their current values.').waitFor();
+  await clean(page, '/policy', true);
+
+  await page.getByRole('button', { name: 'Save policy' }).click();
+  await page.getByRole('status').getByText('No changes to save').waitFor();
+  for (const bad of ['abc', '0', '10000.01']) {
+    await page.getByLabel('Meals limit').fill(bad);
+    await page.getByRole('button', { name: 'Save policy' }).click();
+    await page.locator('#e-' + (await page.getByLabel('Meals limit').getAttribute('id'))!.slice(2)).waitFor();
+  }
+
+  let patches = 0;
+  page.on('request', (r) => { if (r.method() === 'PATCH' && r.url().endsWith('/api/policy')) patches++; });
+  await page.getByLabel('Meals limit').fill('60');
+  await page.getByRole('button', { name: 'Save policy' }).dblclick();
+  await page.getByRole('status').getByText('Policy saved').waitFor();
+  assert.equal(patches, 1);
+  assert.equal(await page.getByLabel('Meals limit').inputValue(), '60.00');
+
+  const emp = await phone();
+  await emp.goto(WEB + '/sign-in');
+  await emp.fill('#email', 'employee@claimflow.test');
+  await emp.fill('#password', PW);
+  await emp.press('#password', 'Enter');
+  await emp.getByRole('heading', { name: 'My claims' }).waitFor();
+  assert.equal(await emp.getByRole('link', { name: 'Policy' }).count(), 0);
+  await emp.goto(`${WEB}/policy`);
+  await emp.getByRole('alert').getByText('Access denied').waitFor();
+  assert.equal(await emp.locator('form').count(), 0);
+});
