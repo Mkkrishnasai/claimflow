@@ -255,3 +255,74 @@ test('S4 AC-5 hanging mailer is a failure after the timeout and does not block t
   await run4(20);
   assert.equal((await rows(c.id))[0].status, 'sent');
 });
+
+// CLAIM-8-S5: mail trouble never touches approve or pay.
+import { readdirSync, readFileSync } from 'node:fs';
+import { createMailer } from '../../api/src/mailer.js';
+import { createServer } from 'node:net';
+const appWith = async (m: unknown) => {
+  const s = createApp({ log: createLogger({ write: () => true }), deps: { prisma, clock: () => new Date(), mailer: m as never, publicBaseUrl: 'http://app.test' } }).listen(0, '127.0.0.1');
+  await new Promise((r) => s.once('listening', r));
+  return s;
+};
+const mkPay = async () => {
+  const p = await mk('ready_to_pay');
+  await prisma.claimEvent.createMany({ data: [['submit', 'draft', 'submitted'], ['approve_final', 'submitted', 'ready_to_pay']].map(([action, fromStatus, toStatus], i) => ({ claimId: p.id, actorId: 'mgr', action, fromStatus, toStatus, seq: i + 1, at: new Date() })) as never });
+  return p;
+};
+// Approve + pay through the HTTP API; returns elapsed ms per call and checks 200, new status, history row, pending rows.
+const approveAndPay = async () => {
+  const a = await mk('submitted'), p = await mkPay();
+  const t0 = Date.now();
+  const ra = await act('mgr', a.id, 'approve');
+  const ta = Date.now() - t0;
+  const t1 = Date.now();
+  const rp = await act('fin', p.id, 'pay', { paymentDate: '2026-01-15', reference: 'INV-1' });
+  const tp = Date.now() - t1;
+  assert.deepEqual([ra.status, rp.status], [200, 200]);
+  assert.equal((await prisma.claim.findUniqueOrThrow({ where: { id: a.id } })).status, 'ready_to_pay');
+  assert.equal((await prisma.claim.findUniqueOrThrow({ where: { id: p.id } })).status, 'paid');
+  assert.equal(await prisma.claimEvent.count({ where: { claimId: a.id, action: 'approve_final' } }), 1);
+  assert.equal(await prisma.claimEvent.count({ where: { claimId: p.id, action: 'pay' } }), 1);
+  return { a, p, ta, tp };
+};
+
+test('S5 AC-1 throwing mailer: approve and pay return 200, rows pending', async () => {
+  const bad = new Proxy({}, { get: () => () => { throw new Error('mailer used'); } });
+  const old = base, s = await appWith(bad);
+  base = `http://127.0.0.1:${(s.address() as AddressInfo).port}`;
+  try {
+    const { a, p } = await approveAndPay();
+    assert.deepEqual([...(await rows(a.id)), ...(await rows(p.id))].map((r) => [r.kind, r.status]), [['approved', 'pending'], ['paid', 'pending']]);
+  } finally { base = old; s.close(); }
+});
+
+test('S5 AC-2 hanging mailer with a run in flight: approve and pay under 1 s', async () => {
+  const hung = { notifyMail: () => new Promise(() => {}) } as never;
+  await mkMoved('submitted', 'approve_final');
+  const inflight = runOnce({ prisma, clock: () => new Date(Date.now() + 1000), mailer: hung, publicBaseUrl: 'http://app.test', sendTimeoutMs: 3000, log: createLogger({ write: () => true }) });
+  await new Promise((r) => setTimeout(r, 100)); // run is now parked inside the send
+  const { ta, tp } = await approveAndPay();
+  assert.ok(ta < 1000 && tp < 1000, `${ta} ${tp}`);
+  await inflight;
+});
+
+test('S5 AC-3 closed SMTP port: actions return 200, one retry line per row', async () => {
+  const port = await new Promise<number>((res) => { const l = createServer().listen(0, '127.0.0.1', () => { const p = (l.address() as AddressInfo).port; l.close(() => res(p)); }); });
+  const real = createMailer({ smtp: { host: '127.0.0.1', port, user: '', pass: '' } } as never);
+  const old = base, s = await appWith(real);
+  base = `http://127.0.0.1:${(s.address() as AddressInfo).port}`;
+  try {
+    await approveAndPay();
+    await runOnce({ prisma, clock: () => new Date(Date.now() + 1000), mailer: real, publicBaseUrl: 'http://app.test', log: createLogger({ write: (l: string) => { dlogs.push(l); return true; } }) });
+    const ev = dlogs.map((l) => JSON.parse(l).mailEvent);
+    assert.deepEqual(ev, ['retry', 'retry']);
+  } finally { base = old; s.close(); }
+});
+
+test('S5 AC-4 no file under api/src/claims imports mailer or the dispatcher', () => {
+  const dir = new URL('../../api/src/claims/', import.meta.url);
+  const files = readdirSync(dir, { recursive: true }).map(String).filter((f) => f.endsWith('.ts'));
+  assert.ok(files.length > 0);
+  for (const f of files) assert.doesNotMatch(readFileSync(new URL(f, dir), 'utf8'), /from\s+['"][^'"]*(mailer|dispatcher)(\.js)?['"]/, f);
+});
