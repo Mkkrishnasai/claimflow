@@ -93,3 +93,7 @@ main.auth { display: grid; max-width: none; min-height: 100vh; padding: 0; }
   main.auth { grid-template-columns: 1fr 1fr; }
   .auth__aside { display: flex; align-items: center; justify-content: center; background: var(--surface); border-right: 1px solid var(--border); font-size: var(--fs-title); font-weight: var(--fw-title); }
 }
+.summary { display: flex; gap: var(--space-3); margin: var(--space-3) 0; }
+.summary > div { padding: var(--space-2) var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-card); }
+.summary dt { color: var(--text-2); }
+.summary dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; }
