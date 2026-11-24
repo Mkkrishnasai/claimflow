@@ -309,6 +309,8 @@ test('CLAIM-4-S5 failures list, flags and justification field at 360 px', async 
   await page.locator('textarea[id^=just-]').first().waitFor();
   assert.match(await page.locator('label[for^=just-]').first().innerText(), /^Justification \(at least 20 characters, required above EUR /);
   assert.equal(await page.locator('textarea[id^=just-]').count(), 1); // line 2 is within limit
+  assert.match((await page.locator('textarea[id^=just-]').first().getAttribute('class')) ?? '', /attention/); // highlighted while required
+  assert.equal(await page.locator('.dropzone').count(), 2); // receipt drop zone per saved line
   await clean(page, 'editor with justification');
 
   // flags: same date/category/amount on the claimant's other submitted claim
