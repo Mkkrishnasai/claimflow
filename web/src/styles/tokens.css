@@ -1,0 +1,53 @@
+/* Single source of colour, type, space, shape and motion (CLAIM-79 C-49). Light default, dark via OS setting. */
+:root {
+  color-scheme: light dark;
+
+  --bg: #F7F7FB; --surface: #FFFFFF; --border: #E4E5EE;
+  --text: #0B1026; --text-2: #4B5070; --muted: #6B7090;
+  --primary: #6D28D9; --primary-hover: #5B21B6; --primary-soft: #EDE9FE; --accent: #0F766E;
+  --danger: #B91C1C; --warning: #B45309; --topbar: #0B1026;
+
+  --badge-draft-fg: #475569; --badge-draft-bg: #F1F5F9;
+  --badge-submitted-fg: #1D4ED8; --badge-submitted-bg: #DBEAFE;
+  --badge-approved-fg: #6D28D9; --badge-approved-bg: #EDE9FE;
+  --badge-rejected-fg: #B91C1C; --badge-rejected-bg: #FEE2E2;
+  --badge-ready-fg: #0F766E; --badge-ready-bg: #CCFBF1;
+  --badge-paid-fg: #15803D; --badge-paid-bg: #DCFCE7;
+  --badge-flag-fg: #B45309; --badge-flag-bg: #FEF3C7;
+
+  /* derived (not in the epic table) */
+  --on-primary: #FFFFFF; --topbar-text: #FFFFFF; --success: var(--badge-paid-fg);
+
+  --font: Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --fs-title: 28px; --fw-title: 600;
+  --fs-section: 18px; --fw-section: 600;
+  --fs-body: 15px; --fw-body: 400;
+  --fs-small: 13px; --fw-small: 500;
+
+  --space-1: 8px; --space-2: 16px; --space-3: 24px; --space-4: 32px; --space-5: 40px; --space-6: 48px;
+  --radius-card: 12px; --radius-input: 12px; --radius-btn: 8px; --radius-pill: 999px;
+  --shadow-card: 0 1px 2px rgba(11, 16, 38, .06), 0 4px 12px rgba(11, 16, 38, .04);
+  --shadow-raised: 0 2px 4px rgba(11, 16, 38, .08), 0 8px 20px rgba(11, 16, 38, .08);
+
+  --motion: 150ms ease-out;
+  --target: 44px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0B1026; --surface: #151A36; --border: #2A3052;
+    --text: #E8E9F5; --text-2: #A9ADC8; --muted: #8A8FB0;
+    --primary: #7C3AED; --primary-hover: #6D28D9; --primary-soft: #2E1F5E; --accent: #2DD4BF;
+    --danger: #F87171; --warning: #FBBF24; --topbar: #070A1A;
+
+    --badge-draft-fg: #CBD5E1; --badge-draft-bg: #1E293B;
+    --badge-submitted-fg: #93C5FD; --badge-submitted-bg: #1E3A8A;
+    --badge-approved-fg: #C4B5FD; --badge-approved-bg: #2E1F5E;
+    --badge-rejected-fg: #FCA5A5; --badge-rejected-bg: #7F1D1D;
+    --badge-ready-fg: #5EEAD4; --badge-ready-bg: #134E4A;
+    --badge-paid-fg: #86EFAC; --badge-paid-bg: #14532D;
+    --badge-flag-fg: #FCD34D; --badge-flag-bg: #78350F;
+
+    --topbar-text: var(--text);
+  }
+}
