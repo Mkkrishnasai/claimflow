@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { api, ApiError } from '../api';
 import { formatCents, parseEuro } from '../money';
+import { Alert, Button, PageHeader, TextField } from '../ui/components';
 
 interface Policy { categories: { code: string; label: string; limitCents: number }[]; receiptThresholdCents: number; secondApprovalCents: number }
 type Vals = Record<string, string>; // key: category code, or 'receipt' / 'second'
@@ -52,27 +53,23 @@ export default function PolicySettings() {
   };
 
   const field = (k: string, label: string) => (
-    <div key={k}>
-      <label htmlFor={`p-${k}`}>{label}</label>
-      <input id={`p-${k}`} type="text" inputMode="decimal" value={vals[k] ?? ''} aria-invalid={!!errs[k]} aria-describedby={errs[k] ? `e-${k}` : undefined}
-        onChange={(ev) => setVals({ ...vals, [k]: ev.target.value })} />
-      {errs[k] && <p id={`e-${k}`} className="error">{errs[k]}</p>}
-    </div>
+    <TextField key={k} id={`p-${k}`} label={label} type="text" inputMode="decimal" value={vals[k] ?? ''} error={errs[k]} errorId={`e-${k}`}
+      onChange={(ev) => setVals({ ...vals, [k]: ev.target.value })} />
   );
 
   return (
     <section>
-      <h1 tabIndex={-1}>Policy settings</h1>
-      {loadError && <p role="alert" className="error">{loadError}</p>}
+      <PageHeader title="Policy settings" />
+      {loadError && <Alert>{loadError}</Alert>}
       {policy && (
         <form onSubmit={save} noValidate>
           <p>Changes apply to claims submitted from now on. Claims already submitted keep their current values.</p>
           {policy.categories.map((c) => field(c.code, `${c.label} limit (EUR)`))}
           {field(RECEIPT, 'Receipt required from (EUR)')}
           {field(SECOND, 'Second approval above (EUR)')}
-          <button type="submit" className="button" disabled={busy}>Save policy</button>
+          <Button type="submit" disabled={busy}>Save policy</Button>
           <p role="status">{status}</p>
-          <p role="alert" className="error">{alert}</p>
+          <Alert>{alert}</Alert>
         </form>
       )}
     </section>
