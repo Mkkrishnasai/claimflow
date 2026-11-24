@@ -451,7 +451,9 @@ test('CLAIM-6-S6 payments queue: cards, flags, nav, a11y at 360 px', async () =>
   await page.getByRole('heading', { name: 'Payments', level: 1 }).waitFor();
   await page.getByRole('link', { name: 'Queue trip' }).first().waitFor();
   assert.equal(await page.evaluate(() => document.activeElement?.tagName), 'H1');
-  await page.getByText(/^\d+ claims? waiting, total EUR \d+\.\d\d$/).waitFor();
+  const tile = (name: string) => page.locator('dl.summary > div').filter({ has: page.getByText(name, { exact: true }) }).locator('dd');
+  assert.match((await tile('Ready to pay').innerText()).trim(), /^\d+$/);
+  assert.match((await tile('Total').innerText()).trim(), /^EUR \d+\.\d\d$/);
   const card = page.locator('ul.cards > li').filter({ has: page.locator(`a[href="/payments/${second}"]`) });
   await card.getByText('Possible duplicate (1)').waitFor();
   const plain = page.locator('ul.cards > li').filter({ has: page.locator(`a[href="/payments/${first}"]`) });
