@@ -509,3 +509,66 @@ test('CLAIM-6-S6 payments queue: cards, flags, nav, a11y at 360 px', async () =>
   await emp.goto(`${WEB}/payments`);
   await emp.getByRole('alert').getByText('Access denied').waitFor();
 });
+
+test('CLAIM-6-S7 payment screen: controls, send-back error focus, pay, own claim, a11y at 360 px', async () => {
+  const s = await apiAs('employee@claimflow.test', PW);
+  const h = { 'content-type': 'application/json', 'x-csrf-token': s.csrf, cookie: s.cookie };
+  const m = await apiAs('manager@claimflow.test', PW);
+  const mh = { 'content-type': 'application/json', 'x-csrf-token': m.csrf, cookie: m.cookie };
+  const cat = ((await (await fetch(`${WEB}/api/categories`, { headers: { cookie: s.cookie } })).json()) as { code: string }[])[0];
+  const today = new Date().toISOString().slice(0, 10);
+  const mk = async (n: number) => {
+    const body = { title: `Pay trip ${n}`, purpose: 'Client workshop in Berlin', lines: [{ date: today, categoryCode: cat.code, amountCents: 100 + n, description: 'Pay taxi', justification: 'Client dinner with the whole team' }] };
+    const id = ((await (await fetch(`${WEB}/api/claims`, { method: 'POST', headers: h, body: JSON.stringify(body) })).json()) as { id: string }).id;
+    assert.equal((await fetch(`${WEB}/api/claims/${id}/submit`, { method: 'POST', headers: h })).status, 200);
+    assert.equal((await fetch(`${WEB}/api/claims/${id}/approve`, { method: 'POST', headers: mh })).status, 200);
+    return id;
+  };
+  const back = await mk(1);
+  const pay = await mk(2);
+
+  const page = await phone();
+  await page.goto(WEB + '/sign-in');
+  await page.fill('#email', 'finance@claimflow.test');
+  await page.fill('#password', PW);
+  await page.press('#password', 'Enter');
+  await page.getByRole('heading', { name: 'My claims' }).waitFor();
+  await page.goto(`${WEB}/payments/${back}`);
+  await page.getByRole('heading', { name: 'Pay trip 1' }).waitFor();
+  assert.equal(await page.evaluate(() => document.activeElement?.tagName), 'H1');
+  await page.getByRole('link', { name: 'Back to payments' }).first().waitFor();
+  assert.equal(await page.getByLabel('Payment date').getAttribute('max'), today);
+  assert.equal(await page.getByLabel('Payment reference').getAttribute('maxlength'), '100');
+
+  await page.getByLabel('Reason for sending back').fill('short');
+  await page.getByRole('button', { name: 'Send back' }).click();
+  await page.getByRole('alert').waitFor();
+  assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('role')), 'alert');
+  await page.getByText('ready_to_pay', { exact: true }).waitFor();
+  await clean(page, 'payment screen with error', true);
+
+  await page.getByLabel('Reason for sending back').fill('Receipt does not match the amount');
+  await page.getByRole('button', { name: 'Send back' }).click();
+  await page.getByText('rejected', { exact: true }).waitFor();
+  assert.equal(await page.getByRole('button', { name: 'Mark paid' }).count(), 0);
+
+  await page.goto(`${WEB}/payments/${pay}`);
+  await page.getByRole('heading', { name: 'Pay trip 2' }).waitFor();
+  await page.getByLabel('Payment date').fill(today);
+  await page.getByLabel('Payment reference').fill('INV-0042');
+  await page.getByRole('button', { name: 'Mark paid' }).dblclick();
+  await page.getByText('paid', { exact: true }).waitFor();
+  await page.getByText('INV-0042').waitFor();
+  assert.equal(await page.getByRole('button', { name: /Mark paid|Send back/ }).count(), 0);
+
+  // the claimant sees the payment record but no controls
+  const emp = await phone();
+  await emp.goto(WEB + '/sign-in');
+  await emp.fill('#email', 'employee@claimflow.test');
+  await emp.fill('#password', PW);
+  await emp.press('#password', 'Enter');
+  await emp.getByRole('heading', { name: 'My claims' }).waitFor();
+  await emp.goto(`${WEB}/claims/${pay}`);
+  await emp.getByText('INV-0042').waitFor();
+  assert.equal(await emp.getByRole('button', { name: /Mark paid|Send back/ }).count(), 0);
+});

@@ -5,11 +5,11 @@ import { formatCents } from '../money';
 interface Receipt { id: string; originalName: string | null }
 interface Line { id: string; date: string; categoryCode: string; amountCents: number; description: string; justification: string | null; overLimit: boolean; duplicate: { claimId: string; basis: string } | null; receipts: Receipt[] }
 interface Event { seq: number; action: string; fromStatus: string; toStatus: string; reason: string | null; at: string; actor: { id: string; name: string } }
-interface Claim { id: string; claimantId: string; approverId: string | null; claimant?: { id: string; name: string }; title: string; purpose: string; status: string; totalCents: number; lines: Line[]; history: Event[] }
+interface Claim { id: string; claimantId: string; approverId: string | null; claimant?: { id: string; name: string }; title: string; purpose: string; status: string; payment?: { date: string; reference: string } | null; totalCents: number; lines: Line[]; history: Event[] }
 
 const NO_MANAGER = 'A user with no manager cannot submit claims';
 
-export default function ClaimDetail({ id, viewer, go, back = '/claims' }: { id: string; viewer: SessionUser; go: (to: string) => void; back?: '/claims' | '/approvals' }) {
+export default function ClaimDetail({ id, viewer, go, back = '/claims' }: { id: string; viewer: SessionUser; go: (to: string) => void; back?: '/claims' | '/approvals' | '/payments' }) {
   const [c, setC] = useState<Claim | null>(null);
   const [hasManager, setHasManager] = useState(true);
   const [error, setError] = useState('');
@@ -20,7 +20,9 @@ export default function ClaimDetail({ id, viewer, go, back = '/claims' }: { id: 
   const inFlight = useRef(false);
   const [busy, setBusy] = useState(false);
   const [reason, setReason] = useState('');
-  const backLink = back === '/approvals' ? <a href="/approvals">Back to approvals</a> : <a href="/claims">Back to my claims</a>;
+  const [payDate, setPayDate] = useState('');
+  const [payRef, setPayRef] = useState('');
+  const backLink = back === '/approvals' ? <a href="/approvals">Back to approvals</a> : back === '/payments' ? <a href="/payments">Back to payments</a> : <a href="/claims">Back to my claims</a>;
 
   const load = useCallback(() => api<Claim>(`/claims/${id}`).then(setC).catch((e) => {
     setFatal(e instanceof ApiError && e.status === 403 ? 'Access denied' : e instanceof ApiError && e.status === 404 ? 'Claim not found' : 'Could not load the claim.');
@@ -35,7 +37,7 @@ export default function ClaimDetail({ id, viewer, go, back = '/claims' }: { id: 
     if (inFlight.current) return; // double-click guard: state updates lag the second click
     inFlight.current = true; setBusy(true);
     setError(''); setFailures([]);
-    try { await f(); setReason(''); after ? after() : await load(); } catch (e) {
+    try { await f(); setReason(''); setPayDate(''); setPayRef(''); after ? after() : await load(); } catch (e) {
       if (e instanceof ApiError && e.failures?.length) setFailures(e.failures);
       else if (e instanceof ApiError && e.status === 409 && decision.current) setError('This claim was already actioned');
       else setError(e instanceof ApiError ? e.reason ?? e.code : 'Request failed.');
@@ -43,7 +45,7 @@ export default function ClaimDetail({ id, viewer, go, back = '/claims' }: { id: 
     } finally { inFlight.current = false; setBusy(false); decision.current = false; }
   }
   const decision = useRef(false);
-  const decide = (action: 'approve' | 'reject') => { decision.current = true; return run(() => api(`/claims/${id}/${action}`, 'POST', action === 'reject' ? { reason } : {})); };
+  const decide = (action: 'approve' | 'reject' | 'pay' | 'send-back') => { decision.current = true; return run(() => api(`/claims/${id}/${action}`, 'POST', action === 'pay' ? { paymentDate: payDate, reference: payRef } : action === 'approve' ? {} : { reason })); };
 
   if (fatal) return <section><h1 tabIndex={-1}>Claim</h1><p role="alert" className="error">{fatal}</p><p>{backLink}</p></section>;
   if (!c) return <section><h1 tabIndex={-1}>Claim</h1></section>;
@@ -53,6 +55,8 @@ export default function ClaimDetail({ id, viewer, go, back = '/claims' }: { id: 
   const canEdit = canSubmit;
   const canWithdraw = own && c.status === 'submitted';
   const canDecide = c.approverId === viewer.id && !own && (c.status === 'submitted' || c.status === 'approved');
+  const canPay = viewer.role === 'finance' && !own && c.status === 'ready_to_pay';
+  const today = new Date().toISOString().slice(0, 10);
   const canDelete = own && c.status === 'draft' && c.history.length === 0;
 
   return (
@@ -62,6 +66,7 @@ export default function ClaimDetail({ id, viewer, go, back = '/claims' }: { id: 
         {c.claimant && <><dt>Claimant</dt><dd>{c.claimant.name}</dd></>}
         <dt>Status</dt><dd>{c.status}</dd>
         <dt>Purpose</dt><dd>{c.purpose}</dd>
+        {c.payment && <><dt>Payment date</dt><dd>{c.payment.date}</dd><dt>Payment reference</dt><dd>{c.payment.reference}</dd></>}
       </dl>
       <h2>Lines</h2>
       <ul className="cards">
@@ -99,6 +104,19 @@ export default function ClaimDetail({ id, viewer, go, back = '/claims' }: { id: 
             <textarea id="reject-reason" value={reason} onChange={(e) => setReason(e.target.value)} aria-describedby="reject-hint" />
             <p id="reject-hint">At least 10 characters</p>
             <button type="button" disabled={busy} onClick={() => decide('reject')}>Reject</button>
+          </div>
+        )}
+        {canPay && (
+          <div>
+            <label htmlFor="pay-date">Payment date</label>
+            <input id="pay-date" type="date" max={today} value={payDate} onChange={(e) => setPayDate(e.target.value)} />
+            <label htmlFor="pay-ref">Payment reference</label>
+            <input id="pay-ref" type="text" maxLength={100} value={payRef} onChange={(e) => setPayRef(e.target.value)} />
+            <button type="button" disabled={busy} onClick={() => decide('pay')}>Mark paid</button>
+            <label htmlFor="back-reason">Reason for sending back</label>
+            <textarea id="back-reason" value={reason} onChange={(e) => setReason(e.target.value)} aria-describedby="back-hint" />
+            <p id="back-hint">At least 10 characters</p>
+            <button type="button" disabled={busy} onClick={() => decide('send-back')}>Send back</button>
           </div>
         )}
         {error && <div role="alert" tabIndex={-1} ref={errRef} className="error">{error}</div>}
