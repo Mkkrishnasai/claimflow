@@ -11,3 +11,7 @@ export function parseEuro(input: string): number | null {
   const cents = Number(m[1] + (m[2] ?? '').padEnd(2, '0'));
   return cents >= 1 && cents <= 1_000_000 ? cents : null;
 }
+
+// CR-1: a justification is sent only while the line is over its category limit; otherwise null (a stale text must not reach the server).
+export const justificationFor = (cents: number, limitCents: number, text: string): string | null =>
+  cents > limitCents ? text.trim() || null : null;

@@ -25,6 +25,11 @@ export interface AppOptions {
 
 export function createApp(opts: AppOptions = {}): Express {
   const app = express();
+  app.disable('x-powered-by');
+  app.use((_req, res, next) => { // CR-1: on every response, including 404 and errors
+    res.set({ 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Content-Security-Policy': "frame-ancestors 'none'", 'Referrer-Policy': 'no-referrer' });
+    next();
+  });
   app.use(requestLog(opts.log ?? createLogger()));
   app.get('/health', (_req, res) => {
     res.status(200).json({ status: 'ok' });

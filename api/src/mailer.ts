@@ -14,7 +14,7 @@ const SUBJECT: Record<LinkKind, string> = { set_password: 'Set your ClaimFlow pa
 export function createMailer(config: Pick<Config, 'smtp'>): Mailer {
   const { host, port, user, pass } = config.smtp;
   const transport = nodemailer.createTransport({
-    host, port, secure: false, ignoreTLS: !user,
+    host, port, secure: false, ignoreTLS: !user, requireTLS: process.env.NODE_ENV === 'production',
     auth: user ? { user, pass } : undefined,
     connectionTimeout: 5000, greetingTimeout: 5000, socketTimeout: 10000,
   });

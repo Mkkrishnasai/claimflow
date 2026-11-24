@@ -109,6 +109,7 @@ test('AC-3 timing medians within 100 ms; tokens added only for known', async () 
     const ts: number[] = [];
     for (let i = 0; i < N; i++) {
       const email = c === 'known' ? `tk${i}@claimflow.test` : c === 'off' ? `td${i}@claimflow.test` : `tu${i}@claimflow.test`;
+      now = new Date(now.getTime() + 3_700_000); // CR-1: stay under the per-IP hourly quota
       const before = await tokens(), t = performance.now();
       assert.equal((await forgot(email)).status, 200);
       ts.push(performance.now() - t);
