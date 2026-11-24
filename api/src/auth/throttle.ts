@@ -51,7 +51,7 @@ export async function takeForgotSlot(tx: Tx, email: string, now: Date): Promise<
   return true;
 }
 
-// CR-1: per-IP limits on top of the per-email ones. Rows reuse LoginAttempt with the IP in `email`. ponytail: req.ip as-is (no trust-proxy); set `trust proxy` if deployed behind one.
+// CR-1: per-IP limits on top of the per-email ones. Rows reuse LoginAttempt with the IP in `email`. req.ip honours X-Forwarded-For only from loopback (`trust proxy` in app.ts); a non-loopback front proxy needs its own setting.
 const IP_SIGN_IN_LIMIT = 20; // failed sign-ins per IP per 15 min
 const IP_FORGOT_LIMIT = 10; // forgot-password requests per IP per hour
 export const RETENTION_MS = 24 * 3_600_000;

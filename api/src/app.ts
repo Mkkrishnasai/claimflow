@@ -26,6 +26,7 @@ export interface AppOptions {
 export function createApp(opts: AppOptions = {}): Express {
   const app = express();
   app.disable('x-powered-by');
+  app.set('trust proxy', 'loopback'); // SEC-001: per-IP throttles key on the client IP the local proxy forwards (X-Forwarded-For)
   app.use((_req, res, next) => { // CR-1: on every response, including 404 and errors
     res.set({ 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Content-Security-Policy': "frame-ancestors 'none'", 'Referrer-Policy': 'no-referrer' });
     next();

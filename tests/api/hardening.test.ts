@@ -28,10 +28,10 @@ before(async () => {
 after(async () => { srv.close(); await prisma.$disconnect(); });
 beforeEach(async () => { now = T0; sent.length = 0; await prisma.loginAttempt.deleteMany(); });
 
-async function post(path: string, body: unknown) {
+async function post(path: string, body: unknown, xff?: string) {
   const pre = await fetch(`${base}/api/auth/csrf`);
   const token = ((await pre.json()) as { csrfToken: string }).csrfToken;
-  return fetch(`${base}${path}`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-csrf-token': token, cookie: pre.headers.getSetCookie()[0].split(';')[0] }, body: JSON.stringify(body) });
+  return fetch(`${base}${path}`, { method: 'POST', headers: { ...(xff && { 'x-forwarded-for': xff }), 'content-type': 'application/json', 'x-csrf-token': token, cookie: pre.headers.getSetCookie()[0].split(';')[0] }, body: JSON.stringify(body) });
 }
 const signIn = (email: string, password: string) => post('/api/auth/sign-in', { email, password });
 
@@ -42,6 +42,19 @@ test('per-IP sign-in limit: 20 failures across emails block the IP, even for a g
   assert.deepEqual(await blocked.json(), { error: 'invalid_credentials' });
   now = new Date(T0.getTime() + 15 * 60_000);
   assert.equal((await signIn('h@claimflow.test', PW)).status, 200);
+});
+
+test('per-IP sign-in limit is per forwarded client: one blocked client does not block another (SEC-001)', async () => {
+  let n = 0; // distinct emails so the per-email lock does not stop the IP counter
+  const bad = (xff: string) => post('/api/auth/sign-in', { email: `x${n++}@claimflow.test`, password: 'wrong password!' }, xff);
+  for (let i = 0; i < 20; i++) await bad('203.0.113.1');
+  const row = (ip: string) => prisma.loginAttempt.findUnique({ where: { kind_email: { kind: 'sign_in_ip', email: ip } } });
+  assert.equal((await row('203.0.113.1'))?.count, 20);
+  assert.equal(await row('127.0.0.1'), null);
+  const other = await post('/api/auth/sign-in', { email: 'h@claimflow.test', password: PW }, '203.0.113.2');
+  assert.equal(other.status, 200);
+  const blocked = await post('/api/auth/sign-in', { email: 'h@claimflow.test', password: PW }, '203.0.113.1');
+  assert.equal(blocked.status, 401);
 });
 
 test('per-IP forgot limit: 20 requests per hour, then identical 200 with no token or mail', async () => {
