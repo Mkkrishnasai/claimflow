@@ -328,10 +328,11 @@ export const submitClaim = (d: ClaimDeps, user: User, id: string) => withWrite(d
   const now = d.clock();
   const full = await tx.claim.findUniqueOrThrow({ where: { id }, select: { title: true, purpose: true, lines: { select: { id: true, position: true, date: true, categoryCode: true, amountCents: true, justification: true, receipts: { select: { sha256: true } } } } } });
   const cats = await tx.category.findMany({ select: { code: true, limitCents: true } });
-  const failures = checkSubmit({ ...full, lines: full.lines.map(({ receipts, ...l }) => ({ ...l, receiptCount: receipts.length })) }, new Map(cats.map((x) => [x.code, x.limitCents])), utcToday(now));
+  const policy = await tx.policy.findUniqueOrThrow({ where: { id: 1 } }); // one read; the write lock makes it a complete policy
+  const failures = checkSubmit({ ...full, lines: full.lines.map(({ receipts, ...l }) => ({ ...l, receiptCount: receipts.length })) }, new Map(cats.map((x) => [x.code, x.limitCents])), utcToday(now), policy.receiptThresholdCents);
   if (failures.length) throw new SubmitRefused(failures, c.status); // before the first write
   const dups = await findDuplicates(tx, { id, claimantId: c.claimantId }, full.lines.map((l) => ({ ...l, shas: l.receipts.map((r) => r.sha256) })));
-  const ev = await moveClaim(tx, { claimId: id, action: c.status === 'draft' ? 'submit' : 'resubmit', actorId: user!.id, now, set: { approverId: mgr.id, submittedAt: now, updatedAt: now }, beforeAppend: d.beforeAppend });
+  const ev = await moveClaim(tx, { claimId: id, action: c.status === 'draft' ? 'submit' : 'resubmit', actorId: user!.id, now, set: { approverId: mgr.id, submittedAt: now, updatedAt: now, secondApprovalCents: policy.secondApprovalCents }, beforeAppend: d.beforeAppend });
   // One UPDATE: snapshot the limit and overwrite (or clear) both duplicate flags on every line.
   const flag = (col: 'claimId' | 'basis') => (dups.size ? Prisma.sql`CASE "id" ${Prisma.join([...dups].map(([lid, v]) => Prisma.sql`WHEN ${lid} THEN ${v[col]}`), ' ')} ELSE NULL END` : Prisma.sql`NULL`);
   await tx.$executeRaw`UPDATE "ClaimLine" SET "limitCents" = (SELECT "limitCents" FROM "Category" WHERE "code" = "ClaimLine"."categoryCode"), "duplicateClaimId" = ${flag('claimId')}, "duplicateBasis" = ${flag('basis')} WHERE "claimId" = ${id}`;
@@ -342,7 +343,7 @@ export const withdrawClaim = (d: ClaimDeps, user: User, id: string, body: Record
   await ownForMove(tx, user, id, ['submitted']);
   const reason = body.reason === undefined || body.reason === null ? null : typeof body.reason === 'string' && body.reason.length <= 500 ? body.reason : (() => { throw bad('reason must be at most 500 characters'); })();
   const now = d.clock();
-  const ev = await moveClaim(tx, { claimId: id, action: 'withdraw', actorId: user!.id, reason, now, set: { approverId: null, submittedAt: null, updatedAt: now }, beforeAppend: d.beforeAppend });
+  const ev = await moveClaim(tx, { claimId: id, action: 'withdraw', actorId: user!.id, reason, now, set: { approverId: null, submittedAt: null, updatedAt: now, secondApprovalCents: null }, beforeAppend: d.beforeAppend });
   await tx.claimLine.updateMany({ where: { claimId: id }, data: { duplicateClaimId: null, duplicateBasis: null } });
   return { claim: await reload(tx, id), ev };
 });
