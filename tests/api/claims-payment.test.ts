@@ -25,7 +25,7 @@ const wipe = async () => {
 const seed = async () => {
   await wipe();
   const passwordHash = await bcrypt.hash(PW, 4);
-  await prisma.user.createMany({ data: ['emp', 'mgr', 'fin', 'adm'].map((id) => ({ id, email: `${id}@claimflow.test`, name: `N-${id}`, role: ({ emp: 'employee', mgr: 'manager', fin: 'finance', adm: 'admin' } as const)[id as 'emp'], passwordHash })) });
+  await prisma.user.createMany({ data: ['emp', 'mgr', 'fin', 'fin2', 'adm'].map((id) => ({ id, email: `${id}@claimflow.test`, name: `N-${id}`, role: ({ emp: 'employee', mgr: 'manager', fin: 'finance', fin2: 'finance', adm: 'admin' } as const)[id as 'emp'], passwordHash })) });
 };
 before(async () => {
   await seed();
@@ -129,11 +129,17 @@ const login = async (who: string, csrf = true): Promise<H> => {
 };
 const payAs = (h: H, id: string, body: unknown = OK) => fetch(`${base}/api/claims/${id}/pay`, { method: 'POST', headers: h, body: JSON.stringify(body) });
 const pay = async (who: string | null, id: string, body: unknown = OK, csrf = true) => payAs(who ? await login(who, csrf) : { 'content-type': 'application/json' }, id, body);
-const events = (id: string) => prisma.claimEvent.findMany({ where: { claimId: id } });
+const events = (id: string) => prisma.claimEvent.findMany({ where: { claimId: id, action: 'pay' } });
+// Approved history, as the real flow leaves it.
+const rtp = async () => {
+  const c = await mk('ready_to_pay');
+  await prisma.claimEvent.createMany({ data: [['submit', 'draft', 'submitted'], ['approve_final', 'submitted', 'ready_to_pay']].map(([action, fromStatus, toStatus], i) => ({ claimId: c.id, actorId: 'mgr', action, fromStatus, toStatus, seq: i + 1, at: new Date() })) });
+  return c;
+};
 const row = (id: string) => prisma.claim.findUniqueOrThrow({ where: { id } });
 
 test('S3 AC-1 finance pays: 200, payment set, one pay history row, same payment on GET', async () => {
-  const c = await mk('ready_to_pay');
+  const c = await rtp();
   const r = await pay('fin', c.id);
   assert.equal(r.status, 200);
   const j = (await r.json()) as J;
@@ -147,7 +153,7 @@ test('S3 AC-1 finance pays: 200, payment set, one pay history row, same payment 
 });
 
 test('S3 AC-2 bad input is 422 and changes nothing; old date and today accepted', async () => {
-  const c = await mk('ready_to_pay');
+  const c = await rtp();
   const bads: unknown[] = [
     { paymentDate: '2026-01-15' }, { ...OK, reference: '' }, { ...OK, reference: '   ' }, { ...OK, reference: 'x'.repeat(101) },
     { ...OK, paymentDate: '2026-13-40' }, { ...OK, paymentDate: 20260115 }, { reference: 'R' }, { ...OK, paymentDate: '2999-01-01' }, { ...OK, paymentDate: '2026-02-30' },
@@ -161,7 +167,7 @@ test('S3 AC-2 bad input is 422 and changes nothing; old date and today accepted'
 });
 
 test('S3 AC-3 wrong role 403, unknown 404 first, wrong status 409; 0 rows changed', async () => {
-  const c = await mk('ready_to_pay');
+  const c = await rtp();
   for (const who of ['emp', 'mgr', 'adm']) { const r = await pay(who, c.id); assert.equal(r.status, 403); assert.deepEqual(await r.json(), { error: 'forbidden' }); }
   assert.equal((await pay('emp', 'nope')).status, 404);
   assert.equal((await pay('fin', 'nope')).status, 404);
@@ -174,7 +180,7 @@ test('S3 AC-3 wrong role 403, unknown 404 first, wrong status 409; 0 rows change
 });
 
 test('S3 AC-4 failed history insert rolls back; extra body keys ignored', async () => {
-  const c = await mk('ready_to_pay');
+  const c = await rtp();
   const deps = { prisma, clock: () => new Date(), receipts: {} as never, beforeAppend: () => { throw new Error('boom'); } };
   await assert.rejects(payClaim(deps, { id: 'fin', role: 'finance' }, c.id, OK), /boom/);
   const r = await row(c.id);
@@ -187,7 +193,7 @@ test('S3 AC-4 failed history insert rolls back; extra body keys ignored', async 
 });
 
 test('S3 AC-5 two simultaneous pays: one 200, one 409, one pay row', async () => {
-  const c = await mk('ready_to_pay');
+  const c = await rtp();
   const h = await login('fin');
   const rs = await Promise.all([payAs(h, c.id), payAs(h, c.id)]);
   assert.deepEqual(rs.map((r) => r.status).sort(), [200, 409]);
@@ -195,7 +201,7 @@ test('S3 AC-5 two simultaneous pays: one 200, one 409, one pay row', async () =>
 });
 
 test('S3 AC-6 log line has pay fields only; reference never logged or echoed; CSRF 403', async () => {
-  const c = await mk('ready_to_pay');
+  const c = await rtp();
   logs.length = 0;
   const bad = await pay('fin', c.id, { paymentDate: 'bad', reference: 'SECRET-REF-123' });
   assert.equal(bad.status, 422); assert.ok(!(await bad.text()).includes('SECRET-REF-123'));
@@ -204,7 +210,33 @@ test('S3 AC-6 log line has pay fields only; reference never logged or echoed; CS
   const ev = logs.map((l) => JSON.parse(l)).filter((l) => l.claimEvent === 'pay');
   assert.equal(ev.length, 1);
   assert.deepEqual([ev[0].claimId, ev[0].from, ev[0].to], [c.id, 'ready_to_pay', 'paid']);
-  const d = await mk('ready_to_pay');
+  const d = await rtp();
   const r = await pay('fin', d.id, OK, false);
   assert.equal(r.status, 403); assert.deepEqual(await r.json(), { error: 'csrf' });
+});
+
+test('S4 AC-3 history lacking approvals: 409 approval_missing, nothing written', async () => {
+  const c = await mk('ready_to_pay');
+  await prisma.claimEvent.create({ data: { claimId: c.id, actorId: 'emp', action: 'submit', fromStatus: 'draft', toStatus: 'submitted', seq: 1, at: new Date() } });
+  const r = await pay('fin', c.id);
+  assert.equal(r.status, 409); assert.equal(((await r.json()) as J).error, 'approval_missing');
+  assert.equal((await row(c.id)).status, 'ready_to_pay'); assert.equal((await prisma.claimEvent.count({ where: { claimId: c.id } })), 1);
+});
+
+test('S4 AC-4 second pay: 409 claim_paid, nothing changes', async () => {
+  const c = await rtp();
+  assert.equal((await pay('fin', c.id)).status, 200);
+  const before = [await row(c.id), await prisma.claimEvent.count({ where: { claimId: c.id } })];
+  const r = await pay('fin', c.id, { paymentDate: '2026-02-01', reference: 'OTHER' });
+  assert.equal(r.status, 409); assert.equal(((await r.json()) as J).error, 'claim_paid');
+  assert.deepEqual([await row(c.id), await prisma.claimEvent.count({ where: { claimId: c.id } })], before);
+});
+
+test('S4 AC-5 finance cannot pay own claim, even as approver; another finance can', async () => {
+  const c = await rtp();
+  await prisma.claim.update({ where: { id: c.id }, data: { claimantId: 'fin', approverId: 'fin' } });
+  const r = await pay('fin', c.id);
+  assert.equal(r.status, 403); assert.equal(((await r.json()) as J).error, 'self_payment');
+  assert.equal((await row(c.id)).status, 'ready_to_pay'); assert.equal((await events(c.id)).length, 0);
+  assert.equal((await pay('fin2', c.id)).status, 200);
 });

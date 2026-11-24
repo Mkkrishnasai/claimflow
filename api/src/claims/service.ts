@@ -4,6 +4,7 @@ import { managerChain, requireClaimant, requireEditable, requireReadable } from 
 import type { ReceiptStore } from './receipt-storage.js';
 import { withWrite, type Clock, type Tx } from '../db.js';
 import { moveClaim } from './status.js';
+import { approvalsComplete } from './payment.js';
 import { canReadClaim, requireFinance } from '../auth/authz.js';
 import { nearestActiveAbove } from '../users/service.js';
 import { checkActor, decideApproval, rejectAction } from './approval.js';
@@ -371,12 +372,16 @@ export const rejectClaim = (d: ClaimDeps, user: User, id: string, body: Record<s
   return { claim: await reload(tx, id), ev };
 });
 
-// E-37 (FR-2). Order: 404, 403 finance, 409 status, then 422 input; every check precedes the one moveClaim. Only paymentDate and reference are read.
+// E-37 (FR-2). Order: 404, 403 forbidden, 403 self_payment, 409 claim_paid, 409 invalid_transition, 409 approval_missing, then 422 input; every check precedes the one moveClaim. Only paymentDate and reference are read.
 async function loadForPayment(tx: Tx, user: User, id: string) {
-  const c = await tx.claim.findUnique({ where: { id }, select: { id: true, status: true } });
+  const c = await tx.claim.findUnique({ where: { id }, select: { id: true, status: true, claimantId: true } });
   if (!c) throw new HttpError(404, 'not_found');
   requireFinance(user);
-  if (c.status !== 'ready_to_pay') throw new HttpError(409, 'invalid_transition'); // S4 adds claim_paid, self_payment, approval check
+  if (c.claimantId === user!.id) throw new HttpError(403, 'self_payment');
+  if (c.status === 'paid') throw new HttpError(409, 'claim_paid');
+  if (c.status !== 'ready_to_pay') throw new HttpError(409, 'invalid_transition');
+  const events = await tx.claimEvent.findMany({ where: { claimId: id }, orderBy: { seq: 'asc' }, select: { action: true } });
+  if (!approvalsComplete(events.map((e) => e.action))) throw new HttpError(409, 'approval_missing');
   return c;
 }
 
