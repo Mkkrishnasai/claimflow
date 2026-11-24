@@ -115,3 +115,80 @@ test('AC-5 approve and pay responses carry no notification field; one extra inse
   assert.deepEqual((await rows(p.id)).map((x) => [x.kind, x.eventSeq]), [['paid', 3]]);
   assert.ok(logs.map((l) => JSON.parse(l)).every((l) => !('notification' in l) && !('dedupeKey' in l)));
 });
+
+// CLAIM-8-S3: dispatcher send path.
+import { runOnce } from '../../api/src/notify/dispatcher.js';
+const sentMail: { to: string; subject: string; text: string }[] = [];
+let fail = false;
+const mailer = { notifyMail: async (to: string, subject: string, text: string) => { if (fail) throw new Error('smtp down secret@x.test'); sentMail.push({ to, subject, text }); } } as never;
+const dlogs: string[] = [];
+const run = () => runOnce({ prisma, clock: () => new Date(Date.now() + 1000), mailer, publicBaseUrl: 'http://app.test', log: createLogger({ write: (l: string) => { dlogs.push(l); return true; } }) });
+const mkMoved = async (status: string, action: Action, title = 'Taxi', claimant = 'emp') => {
+  const c = await mk(status);
+  await prisma.claim.update({ where: { id: c.id }, data: { title, claimantId: claimant } });
+  await move(c.id, action);
+  return c;
+};
+beforeEach(() => { sentMail.length = 0; dlogs.length = 0; fail = false; });
+
+test('S3 AC-1 and AC-5 pending row is sent once to the claimant and becomes sent', async () => {
+  const c = await mkMoved('submitted', 'approve_final');
+  await run(); await run();
+  assert.equal(sentMail.length, 1);
+  assert.equal(sentMail[0].to, 'emp@claimflow.test');
+  const [r] = await rows(c.id);
+  assert.equal(r.status, 'sent'); assert.ok(r.sentAt);
+});
+
+test('S3 AC-2/3/4 content per kind, header injection neutralised, only own claimant, no secrets', async () => {
+  await mkMoved('submitted', 'approve_final', 'x\r\nBcc: a@b.test');
+  await mkMoved('submitted', 'reject');
+  await mkMoved('ready_to_pay', 'send_back', 'Other', 'mgr');
+  await run();
+  const by = (s: string) => sentMail.find((m) => m.subject === s)!;
+  assert.ok(by('Your claim was approved').text.includes('x Bcc: a@b.test\n'));
+  assert.ok(by('Your claim was rejected').text.includes(REASON));
+  assert.ok(by('Your claim was sent back').text.includes(REASON));
+  assert.equal(by('Your claim was sent back').to, 'mgr@claimflow.test');
+  assert.equal(by('Your claim was rejected').to, 'emp@claimflow.test');
+  for (const m of sentMail) { assert.match(m.text, /EUR 10\.00/); assert.match(m.text, /N-mgr/); assert.doesNotMatch(m.text, /password|token|sid=/i); }
+});
+
+test('S3 AC-2 paid body has date and reference', async () => {
+  await mkMoved('ready_to_pay', 'pay');
+  await run();
+  assert.match(sentMail[0].text, /2026-01-15/); assert.match(sentMail[0].text, /INV-1/);
+});
+
+test('S3 AC-6 unrenderable row fails without sending, attempts unchanged', async () => {
+  const c = await mkMoved('submitted', 'approve_final');
+  await prisma.notification.updateMany({ where: { claimId: c.id }, data: { eventSeq: 99 } });
+  await run();
+  const [r] = await rows(c.id);
+  assert.deepEqual([r.status, r.attempts, sentMail.length], ['failed', 0, 0]);
+  assert.equal(dlogs.map((l) => JSON.parse(l)).filter((l) => l.mailEvent === 'render_failed').length, 1);
+});
+
+test('S3 AC-7 one PII-free sent line; failed send is logged without address', async () => {
+  const c = await mkMoved('ready_to_pay', 'pay', 'SecretTitle');
+  await run();
+  const lines = dlogs.map((l) => JSON.parse(l));
+  assert.equal(lines.length, 1);
+  assert.deepEqual([lines[0].mailEvent, lines[0].kind, lines[0].attempts, typeof lines[0].notificationId], ['sent', 'paid', 0, 'string']);
+  for (const s of ['emp@claimflow.test', 'SecretTitle', 'INV-1']) assert.ok(!dlogs.join('').includes(s));
+  fail = true; dlogs.length = 0;
+  await mkMoved('submitted', 'approve_final');
+  await run();
+  assert.ok(!dlogs.join('').includes('secret@x.test'));
+  assert.equal(JSON.parse(dlogs[0]).mailEvent, 'retry');
+  void c;
+});
+
+test('S3 AC-8 one run sends 50 of 60 due rows', async () => {
+  const c = await mkMoved('submitted', 'approve_final');
+  const src = (await rows(c.id))[0];
+  await prisma.notification.createMany({ data: Array.from({ length: 59 }, (_, i) => ({ kind: 'approved' as const, userId: 'emp', claimId: c.id, eventSeq: src.eventSeq, dedupeKey: `bulk-${i}`, nextAttemptAt: new Date(0) })) });
+  await run();
+  assert.equal(sentMail.length, 50);
+  assert.equal(await prisma.notification.count({ where: { status: 'pending' } }), 10);
+});
