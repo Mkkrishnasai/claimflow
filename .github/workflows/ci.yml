@@ -40,6 +40,9 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm run build
+      - run: npm run check:bundle
+      - name: PR guard (protected paths, assertion counts vs CLAIM-9 head)
+        run: node scripts/pr-guard.mjs 23a554c
       - name: Initialize disposable database
         run: |
           npx prisma migrate deploy

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api, ApiError, type SessionUser } from '../api';
 import type { ListUser } from './UsersList';
+import { Alert, Button, FlagBadge, PageHeader, Select } from '../ui/components';
 
 interface Detail extends ListUser { reports: { id: string; name: string }[]; lockedUntil: string | null; passwordSet: boolean }
 
@@ -33,30 +34,29 @@ export default function UserDetail({ id, viewer }: { id: string; viewer: Session
 
   return (
     <section>
-      <h1 tabIndex={-1}>User detail</h1>
-      {error && <p role="alert" className="error">{error}</p>}
-      {note && <p role="status">{note}</p>}
+      <PageHeader title="User detail" />
+      {error && <Alert>{error}</Alert>}
+      {note && <Alert role="status" tone="info">{note}</Alert>}
       {u && (
         <>
           <dl>
             <dt>Name</dt><dd>{u.name}</dd>
             <dt>Email</dt><dd>{u.email}</dd>
             <dt>Role</dt><dd>{u.role}</dd>
-            <dt>Manager</dt><dd>{u.managerName ?? 'None'}{u.managerInactive && <strong className="flag"> (manager inactive)</strong>}</dd>
+            <dt>Manager</dt><dd>{u.managerName ?? 'None'}{u.managerInactive && <FlagBadge>(manager inactive)</FlagBadge>}</dd>
             <dt>State</dt><dd>{u.active ? 'Active' : 'Inactive'}</dd>
             <dt>Reports</dt><dd>{u.reports.length ? u.reports.map((r) => r.name).join(', ') : 'None'}</dd>
             <dt>Lock state</dt><dd>{u.lockedUntil ? `Locked until ${new Date(u.lockedUntil).toLocaleString()}` : 'Not locked'}</dd>
           </dl>
           {admin && (
             <>
-              <label htmlFor="manager">Manager</label>
-              <select id="manager" value={u.managerId ?? ''} onChange={(e) => setManager(e.target.value)}>
+              <Select id="manager" label="Manager" value={u.managerId ?? ''} onChange={(e) => setManager(e.target.value)}>
                 <option value="">None</option>
                 {managers.filter((m) => m.id !== u.id).map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
                 {u.managerId && !managers.some((m) => m.id === u.managerId) && <option value={u.managerId}>{u.managerName}</option>}
-              </select>
-              {!u.passwordSet && u.active && <button type="button" onClick={resend}>Resend link</button>}
-              {u.active && <button type="button" onClick={deactivate}>Deactivate</button>}
+              </Select>
+              {!u.passwordSet && u.active && <Button variant="secondary" onClick={resend}>Resend link</Button>}
+              {u.active && <Button variant="danger" onClick={deactivate}>Deactivate</Button>}
             </>
           )}
         </>

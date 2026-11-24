@@ -1,5 +1,6 @@
 import { useEffect, useState, type ChangeEvent } from 'react';
 import { api, ApiError } from '../api';
+import { Alert, Button, Card, DateField, Select, TextField } from '../ui/components';
 import { formatCents, justificationFor, parseEuro } from '../money';
 
 interface Receipt { id: string; originalName: string | null }
@@ -75,9 +76,8 @@ export default function ClaimEditor({ id, go }: { id: string; go: (to: string) =
     } catch (err) { setError(reason(err)); }
   }
 
-  async function upload(l: Line, ev: ChangeEvent<HTMLInputElement>) {
-    const f = ev.target.files?.[0];
-    ev.target.value = '';
+  const upload = (l: Line, ev: ChangeEvent<HTMLInputElement>) => { const f = ev.target.files?.[0]; ev.target.value = ''; return drop(l, f); };
+  async function drop(l: Line, f?: File) { // drag-and-drop is an enhancement; same checks as the file inputs
     if (!f || !l.id) return;
     if (f.size > MAX) return patch(l.key, { err: 'Receipt must be 10 MB or smaller' });
     if (!TYPES.includes(f.type)) return patch(l.key, { err: 'Receipt must be a JPEG, PNG or PDF file' }); // fast feedback only; the server decides
@@ -99,56 +99,46 @@ export default function ClaimEditor({ id, go }: { id: string; go: (to: string) =
   return (
     <section>
       <h1 tabIndex={-1}>{id ? 'Edit claim' : 'New claim'}</h1>
-      {error && <p role="alert" className="error">{error}</p>}
-      {note && <p role="status">{note}</p>}
+      {error && <Alert>{error}</Alert>}
+      {note && <Alert role="status" tone="success">{note}</Alert>}
       {ready && !blocked && (
         <form onSubmit={save}>
-          <label htmlFor="title">Title</label>
-          <input id="title" required maxLength={120} value={title} onChange={(e) => setTitle(e.target.value)} />
-          <label htmlFor="purpose">Purpose</label>
-          <textarea id="purpose" required minLength={10} maxLength={2000} rows={3} value={purpose} onChange={(e) => setPurpose(e.target.value)} />
+          <TextField id="title" label="Title" required maxLength={120} value={title} onChange={(e) => setTitle(e.target.value)} />
+          <TextField multiline id="purpose" label="Purpose" required minLength={10} maxLength={2000} rows={3} value={purpose} onChange={(e) => setPurpose(e.target.value)} />
           {lines.map((l, i) => {
             const limit = cats.find((c) => c.code === l.categoryCode)?.limitCents ?? 0;
             const cents = parseEuro(l.amount);
             const over = cents !== null && cents > limit;
             return (
-            <fieldset key={l.key}>
+            <Card as="fieldset" key={l.key} className="line-card">
               <legend>Line {i + 1}</legend>
-              <label htmlFor={`date-${l.key}`}>Date</label>
-              <input id={`date-${l.key}`} type="date" required value={l.date} onChange={(e) => patch(l.key, { date: e.target.value })} />
-              <label htmlFor={`cat-${l.key}`}>Category</label>
-              <select id={`cat-${l.key}`} value={l.categoryCode} onChange={(e) => patch(l.key, { categoryCode: e.target.value })}>
+              <DateField id={`date-${l.key}`} label="Date" required value={l.date} onChange={(e) => patch(l.key, { date: e.target.value })} />
+              <Select id={`cat-${l.key}`} label="Category" value={l.categoryCode} onChange={(e) => patch(l.key, { categoryCode: e.target.value })}>
                 {cats.map((c) => <option key={c.code} value={c.code}>{`${c.label} (limit ${formatCents(c.limitCents)})`}</option>)}
-              </select>
-              <label htmlFor={`amt-${l.key}`}>Amount (EUR)</label>
-              <input id={`amt-${l.key}`} inputMode="decimal" required value={l.amount} aria-invalid={!!l.amountErr} aria-describedby={l.amountErr ? `amt-err-${l.key}` : undefined} onChange={(e) => patch(l.key, { amount: e.target.value })} />
-              {l.amountErr && <p id={`amt-err-${l.key}`} className="error">{l.amountErr}</p>}
-              <label htmlFor={`desc-${l.key}`}>Description</label>
-              <input id={`desc-${l.key}`} required maxLength={200} value={l.description} onChange={(e) => patch(l.key, { description: e.target.value })} />
+              </Select>
+              <TextField id={`amt-${l.key}`} label="Amount (EUR)" inputMode="decimal" required value={l.amount} error={l.amountErr} errorId={`amt-err-${l.key}`} onChange={(e) => patch(l.key, { amount: e.target.value })} />
+              <TextField id={`desc-${l.key}`} label="Description" required maxLength={200} value={l.description} onChange={(e) => patch(l.key, { description: e.target.value })} />
               {(over || l.stored) && (
-                <>
-                  <label htmlFor={`just-${l.key}`}>{`Justification (at least 20 characters, required above ${formatCents(limit)})`}</label>
-                  <textarea id={`just-${l.key}`} maxLength={500} rows={3} value={l.justification} onChange={(e) => patch(l.key, { justification: e.target.value })} />
-                </>
+                <TextField multiline id={`just-${l.key}`} label={`Justification (at least 20 characters, required above ${formatCents(limit)})`} attention={over} maxLength={500} rows={3} value={l.justification} onChange={(e) => patch(l.key, { justification: e.target.value })} />
               )}
               {l.id ? (
-                <>
-                  <ul className="plain">
+                <div className="dropzone" onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); drop(l, e.dataTransfer.files[0]); }}>
+                  <ul className="plain chips">
                     {l.receipts.map((r) => (
-                      <li key={r.id}>{r.originalName ?? 'Receipt'} <button type="button" onClick={() => dropReceipt(l, r)} aria-label={`Remove receipt ${r.originalName ?? ''}`.trim()}>Remove</button></li>
+                      <li key={r.id} className="chip">{r.originalName ?? 'Receipt'} <button type="button" onClick={() => dropReceipt(l, r)} aria-label={`Remove receipt ${r.originalName ?? ''}`.trim()}>Remove</button></li>
                     ))}
                   </ul>
                   <label className="button">Take photo<input type="file" accept="image/*" capture="environment" onChange={(e) => upload(l, e)} /></label>
                   <label className="button">Choose file<input type="file" accept="image/jpeg,image/png,application/pdf" onChange={(e) => upload(l, e)} /></label>
-                </>
+                </div>
               ) : <p>Save the claim to add receipts.</p>}
-              {l.err && <p role="alert" className="error">{l.err}</p>}
-              {lines.length > 1 && <button type="button" onClick={() => dropLine(l)}>Remove line</button>}
-            </fieldset>
+              {l.err && <Alert>{l.err}</Alert>}
+              {lines.length > 1 && <Button variant="secondary" onClick={() => dropLine(l)}>Remove line</Button>}
+            </Card>
             );
           })}
-          <p><button type="button" onClick={() => setLines((ls) => [...ls, blank(cats[0]?.code ?? '')])}>Add line</button></p>
-          <button type="submit">Save claim</button>
+          <p><Button variant="secondary" onClick={() => setLines((ls) => [...ls, blank(cats[0]?.code ?? '')])}>Add line</Button></p>
+          <Button type="submit">Save claim</Button>
         </form>
       )}
       <p><a href="/claims">Back to my claims</a></p>

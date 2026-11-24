@@ -104,6 +104,6 @@ test('demo: submit with receipt, approve, pay, emails and history', { timeout: 1
     const items = await hist.allInnerTexts();
     assert.equal(items.length, 3, 'UI history entries');
     const names = ['Employee', 'Manager', 'Finance'];
-    items.forEach((t, i) => { assert.match(t, new RegExp(`^.*${names[i]}.*: ${['submit', 'approve_final', 'pay'][i]} .* on .+\\d`, 'i'), `history entry ${i + 1}`); });
+    items.forEach((t, i) => { assert.match(t, new RegExp(`^.*${names[i]}.*: ${['Submitted', 'Approved', 'Paid'][i]} .* on .+\\d`, 'i'), `history entry ${i + 1}`); });
   } finally { await browser.close(); }
 });

@@ -1,7 +1,12 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { WEB, PW, NEW_PW, startStack, stopStack, apiAs, mailLink, phone, clean } from './stack.helpers.js';
+import { WEB, PW, NEW_PW, startStack, stopStack, apiAs, mailLink, phone, clean, ROUTES, visitRoutes } from './stack.helpers.js';
+
+const openMenu = async (page: import('@playwright/test').Page) => {
+  const b = page.getByRole('button', { name: 'Menu' });
+  if ((await b.getAttribute('aria-expanded')) !== 'true') await b.click();
+};
 
 before(startStack);
 after(stopStack);
@@ -254,6 +259,10 @@ test('S10 claim detail: content, actions, no-manager, errors, a11y at 360 px', a
   await page.getByRole('button', { name: 'Submit' }).waitFor();
   assert.equal(await page.locator('ol.plain li').count(), 2);
   assert.equal(await page.getByRole('button', { name: 'Delete' }).count(), 0); // has history
+  // withdrawn: Draft badge, readable timeline, no raw status/action values
+  assert.equal(await page.locator('.badge', { hasText: /^Draft$/ }).count(), 1);
+  assert.match(await page.locator('ol.plain li').last().innerText(), /: Withdrawn \(Submitted to Draft\)/);
+  assert.doesNotMatch(await page.locator('main, section').first().innerText(), /\b(submitted|ready_to_pay|approve_first|withdraw)\b(?!.*\()/);
 
   // no manager: Submit disabled with the explanation
   const sm = await signIn('senior.manager@claimflow.test');
@@ -292,7 +301,7 @@ test('CLAIM-4-S5 failures list, flags and justification field at 360 px', async 
   assert.equal(await alert.locator('li').count(), 4);
   for (const t of await alert.locator('li').allInnerTexts()) assert.match(t, /^(Line \d+|Claim)/);
   assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('role')), 'alert');
-  assert.equal(await page.getByText('draft', { exact: true }).count(), 1);
+  assert.equal(await page.getByText('Draft', { exact: true }).count(), 1);
   await clean(page, 'refused submit');
 
   // editor: justification field appears above the limit
@@ -300,6 +309,8 @@ test('CLAIM-4-S5 failures list, flags and justification field at 360 px', async 
   await page.locator('textarea[id^=just-]').first().waitFor();
   assert.match(await page.locator('label[for^=just-]').first().innerText(), /^Justification \(at least 20 characters, required above EUR /);
   assert.equal(await page.locator('textarea[id^=just-]').count(), 1); // line 2 is within limit
+  assert.match((await page.locator('textarea[id^=just-]').first().getAttribute('class')) ?? '', /attention/); // highlighted while required
+  assert.equal(await page.locator('.dropzone').count(), 2); // receipt drop zone per saved line
   await clean(page, 'editor with justification');
 
   // flags: same date/category/amount on the claimant's other submitted claim
@@ -312,6 +323,8 @@ test('CLAIM-4-S5 failures list, flags and justification field at 360 px', async 
   assert.equal(await page.getByRole('link', { name: 'View earlier claim' }).getAttribute('href'), `/claims/${first}`);
   await clean(page, 'detail with flag');
 });
+
+const plain0 = (page: import('@playwright/test').Page, id: string) => page.locator('ul.cards > li').filter({ has: page.locator(`a[href="/approvals/${id}"]`) });
 
 test('CLAIM-5-S5 approvals inbox: cards, flags, receipts, nav, a11y at 360 px', async () => {
   const s = await apiAs('employee@claimflow.test', PW);
@@ -333,6 +346,7 @@ test('CLAIM-5-S5 approvals inbox: cards, flags, receipts, nav, a11y at 360 px', 
   await page.fill('#password', PW);
   await page.press('#password', 'Enter');
   await page.getByRole('heading', { name: 'My claims' }).waitFor();
+  await openMenu(page);
   await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Approvals' }).click();
   await page.getByRole('heading', { name: 'Approvals' }).waitFor();
   await page.getByRole('link', { name: 'Inbox trip' }).first().waitFor();
@@ -341,6 +355,10 @@ test('CLAIM-5-S5 approvals inbox: cards, flags, receipts, nav, a11y at 360 px', 
   await card.getByText('Over limit (1)').waitFor();
   await card.getByText('Possible duplicate (1)').waitFor();
   await card.getByText('First approval').waitFor();
+  await card.getByText('Submitted', { exact: true }).waitFor();
+  await plain0(page, first.id).getByText('Submitted', { exact: true }).waitFor();
+  await page.locator('.summary').getByText('Waiting', { exact: true }).waitFor();
+  assert.match((await page.locator('.summary .num').innerText()).trim(), /^EUR \d+\.\d\d$/);
   await card.getByText('Employee', { exact: true }).waitFor();
   assert.equal(await card.getByRole('link', { name: /^Receipt/ }).getAttribute('href'), `/api/claims/${second.id}/receipts/${receipt}`);
   const plain = page.locator('ul.cards > li').filter({ has: page.locator(`a[href="/approvals/${first.id}"]`) });
@@ -388,12 +406,12 @@ test('CLAIM-5-S6 review screen: read-only, reject error focus, approve, a11y at 
   await page.getByRole('button', { name: 'Reject' }).click();
   await page.getByRole('alert').waitFor();
   assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('role')), 'alert');
-  await page.getByText('submitted', { exact: true }).waitFor();
+  await page.getByText('Submitted', { exact: true }).waitFor();
   await clean(page, 'review with flag and error');
 
   await page.getByLabel('Reason for rejection').fill('Receipt does not match the amount');
   await page.getByRole('button', { name: 'Reject' }).click();
-  await page.getByText('rejected', { exact: true }).waitFor();
+  await page.getByText('Rejected', { exact: true }).waitFor();
   assert.equal(await page.getByRole('button', { name: 'Approve' }).count(), 0);
 
   // the claimant sees no decision controls
@@ -430,11 +448,14 @@ test('CLAIM-6-S6 payments queue: cards, flags, nav, a11y at 360 px', async () =>
   await page.fill('#password', PW);
   await page.press('#password', 'Enter');
   await page.getByRole('heading', { name: 'My claims' }).waitFor();
+  await openMenu(page);
   await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Payments' }).click();
   await page.getByRole('heading', { name: 'Payments', level: 1 }).waitFor();
   await page.getByRole('link', { name: 'Queue trip' }).first().waitFor();
   assert.equal(await page.evaluate(() => document.activeElement?.tagName), 'H1');
-  await page.getByText(/^\d+ claims? waiting, total EUR \d+\.\d\d$/).waitFor();
+  const tile = (name: string) => page.locator('dl.summary > div').filter({ has: page.getByText(name, { exact: true }) }).locator('dd');
+  assert.match((await tile('Ready to pay').innerText()).trim(), /^\d+$/);
+  assert.match((await tile('Total').innerText()).trim(), /^EUR \d+\.\d\d$/);
   const card = page.locator('ul.cards > li').filter({ has: page.locator(`a[href="/payments/${second}"]`) });
   await card.getByText('Possible duplicate (1)').waitFor();
   const plain = page.locator('ul.cards > li').filter({ has: page.locator(`a[href="/payments/${first}"]`) });
@@ -487,12 +508,12 @@ test('CLAIM-6-S7 payment screen: controls, send-back error focus, pay, own claim
   await page.getByRole('button', { name: 'Send back' }).click();
   await page.getByRole('alert').waitFor();
   assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('role')), 'alert');
-  await page.getByText('ready_to_pay', { exact: true }).waitFor();
+  await page.getByText('Ready to pay', { exact: true }).waitFor();
   await clean(page, 'payment screen with error');
 
   await page.getByLabel('Reason for sending back').fill('Receipt does not match the amount');
   await page.getByRole('button', { name: 'Send back' }).click();
-  await page.getByText('rejected', { exact: true }).waitFor();
+  await page.getByText('Rejected', { exact: true }).waitFor();
   assert.equal(await page.getByRole('button', { name: 'Mark paid' }).count(), 0);
 
   await page.goto(`${WEB}/payments/${pay}`);
@@ -500,7 +521,7 @@ test('CLAIM-6-S7 payment screen: controls, send-back error focus, pay, own claim
   await page.getByLabel('Payment date').fill(today);
   await page.getByLabel('Payment reference').fill('INV-0042');
   await page.getByRole('button', { name: 'Mark paid' }).dblclick();
-  await page.getByText('paid', { exact: true }).waitFor();
+  await page.getByText('Paid', { exact: true }).waitFor();
   await page.getByText('INV-0042').waitFor();
   assert.equal(await page.getByRole('button', { name: /Mark paid|Send back/ }).count(), 0);
 
@@ -523,6 +544,7 @@ test('CLAIM-7-S8 policy screen: load, validate, save once, access, a11y at 360 p
   await page.fill('#password', PW);
   await page.press('#password', 'Enter');
   await page.getByRole('heading', { name: 'My claims' }).waitFor();
+  await openMenu(page);
   await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Policy' }).click();
   await page.getByRole('heading', { name: 'Policy settings', level: 1 }).waitFor();
   await page.getByLabel('Meals limit').waitFor();
@@ -567,6 +589,7 @@ test('CLAIM-7-S9 export screen: download, range validity, failure, access, a11y 
   await page.fill('#password', PW);
   await page.press('#password', 'Enter');
   await page.getByRole('heading', { name: 'My claims' }).waitFor();
+  await openMenu(page);
   await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Export' }).click();
   await page.getByRole('heading', { name: 'Export paid claims', level: 1 }).waitFor();
   await page.getByLabel('From').waitFor();
@@ -603,9 +626,6 @@ test('CLAIM-7-S9 export screen: download, range validity, failure, access, a11y 
 });
 
 // CLAIM-9-S3: every route, strict axe, 360 px, one visible label per input.
-// ponytail: ROUTES is the single list; paths in App.tsx are scanned as text by one regex.
-const ROUTES = ['/sign-in', '/set-password', '/reset-password', '/forgot-password', '/claims', '/claims/new', '/claims/:id/edit', '/claims/:id', '/approvals', '/approvals/:id', '/payments', '/payments/:id', '/policy', '/export', '/users', '/users/:id', '/no-such-page'];
-
 test('AC-5 every path in App.tsx is in ROUTES', () => {
   const src = readFileSync(new URL('../../web/src/App.tsx', import.meta.url), 'utf8');
   const found = [...src.matchAll(/path === '([^']+)'|\.match\(\/\^([^$]+)\$\//g)].map((m) => m[1] ?? m[2].replaceAll('\\/', '/').replaceAll('([^/]+)', ':id'));
@@ -613,47 +633,38 @@ test('AC-5 every path in App.tsx is in ROUTES', () => {
   assert.deepEqual(found.filter((p) => !ROUTES.includes(p)), [], 'route in App.tsx missing from ROUTES');
 });
 
-test('AC-2/3/4 strict axe, no horizontal scroll and one label per input on every route', async () => {
-  const today = new Date().toISOString().slice(0, 10);
-  const login = async (who: string) => { const s = await apiAs(`${who}@claimflow.test`, PW); return { s, h: { 'content-type': 'application/json', 'x-csrf-token': s.csrf, cookie: s.cookie } }; };
-  const emp = await login('employee');
-  const mgr = await login('manager');
-  const cat = ((await (await fetch(`${WEB}/api/categories`, { headers: { cookie: emp.s.cookie } })).json()) as { code: string }[])[0];
-  const mk = async (step: 'draft' | 'submit' | 'approve') => {
-    const body = { title: 'Sweep trip', purpose: 'Client workshop in Berlin', lines: [{ date: today, categoryCode: cat.code, amountCents: 100, description: 'Taxi' }] };
-    const id = ((await (await fetch(`${WEB}/api/claims`, { method: 'POST', headers: emp.h, body: JSON.stringify(body) })).json()) as { id: string }).id;
-    if (step !== 'draft') assert.equal((await fetch(`${WEB}/api/claims/${id}/submit`, { method: 'POST', headers: emp.h })).status, 200);
-    if (step === 'approve') assert.equal((await fetch(`${WEB}/api/claims/${id}/approve`, { method: 'POST', headers: mgr.h })).status, 200);
-    return id;
-  };
-  const claimIds = { draft: await mk('draft'), submitted: await mk('submit'), approved: await mk('approve') };
-  const admin = await login('admin');
-  const adminId = ((await (await fetch(`${WEB}/api/users`, { headers: { cookie: admin.s.cookie } })).json()) as { id: string; role: string }[]).find((u) => u.role === 'admin')!.id;
-  // role that can view each route; auth pages and not-found need no session
-  const role = (r: string) => (/^\/(sign-in|set-password|reset-password|forgot-password)$/.test(r) ? null
-    : r.startsWith('/users') ? 'admin' : r.startsWith('/payments') || r === '/policy' || r === '/export' ? 'finance' : r.startsWith('/approvals') ? 'manager' : 'employee');
-  const pages: Record<string, Awaited<ReturnType<typeof phone>>> = { none: await phone() };
-  for (const r of ['admin', 'finance', 'manager', 'employee']) {
-    const p = (pages[r] = await phone());
-    await p.goto(WEB + '/sign-in');
-    await p.fill('#email', `${r}@claimflow.test`);
-    await p.fill('#password', PW);
-    await p.press('#password', 'Enter');
-    await p.getByRole('heading').first().waitFor();
+test('AC-2/3/4 strict axe, no horizontal scroll and one label per input on every route', () => visitRoutes(async (page, route) => {
+  await clean(page, route);
+  const bad = await page.evaluate(() => [...document.querySelectorAll<HTMLInputElement>('input, select, textarea')]
+    .filter((e) => e.type !== 'hidden' && e.getClientRects().length > 0)
+    .filter((e) => e.labels?.length !== 1 || ![...e.labels].every((l) => l.getBoundingClientRect().width > 0 && l.getBoundingClientRect().height > 0))
+    .map((e) => e.id || e.name));
+  assert.deepEqual(bad, [], `${route}: inputs without exactly one visible label`);
+}));
+
+test('360px nav disclosure opens with Enter/Space, closes with Escape, and the page does not scroll sideways', async () => {
+  const page = await phone();
+  await page.goto(WEB + '/sign-in');
+  await page.fill('#email', 'manager@claimflow.test');
+  await page.fill('#password', PW);
+  await page.press('#password', 'Enter');
+  await page.getByRole('heading', { name: 'My claims' }).waitFor();
+  const btn = page.getByRole('button', { name: 'Menu' });
+  const nav = page.getByRole('navigation', { name: 'Main' });
+  assert.equal(await btn.getAttribute('aria-expanded'), 'false');
+  assert.equal(await nav.getByRole('link', { name: 'Approvals' }).isVisible(), false);
+  for (const k of ['Enter', 'Space']) {
+    await btn.focus();
+    await page.keyboard.press(k);
+    assert.equal(await btn.getAttribute('aria-expanded'), 'true', k);
+    await nav.getByRole('link', { name: 'Approvals' }).waitFor();
+    await nav.getByRole('link', { name: 'Approvals' }).focus();
+    await page.keyboard.press('Escape');
+    assert.equal(await btn.getAttribute('aria-expanded'), 'false', k);
   }
-  for (const route of ROUTES) {
-    const page = pages[role(route) ?? 'none'];
-    const id = route.startsWith('/users') ? adminId : route.startsWith('/payments') ? claimIds.approved : route.startsWith('/approvals') ? claimIds.submitted : claimIds.draft;
-    const hash = route === '/set-password' || route === '/reset-password' ? '#token=x' : '';
-    await page.goto(WEB + route.replace(':id', id) + hash);
-    await page.locator('h1, form, [role=alert]').first().waitFor();
-    await page.waitForLoadState('networkidle');
-    if (route === '/no-such-page') await page.getByRole('alert').first().waitFor();
-    await clean(page, route);
-    const bad = await page.evaluate(() => [...document.querySelectorAll<HTMLInputElement>('input, select, textarea')]
-      .filter((e) => e.type !== 'hidden' && e.getClientRects().length > 0)
-      .filter((e) => e.labels?.length !== 1 || ![...e.labels].every((l) => l.getBoundingClientRect().width > 0 && l.getBoundingClientRect().height > 0))
-      .map((e) => e.id || e.name));
-    assert.deepEqual(bad, [], `${route}: inputs without exactly one visible label`);
-  }
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth));
+  await page.close();
 });
+
+// CLAIM-79-S13 AC-1: the same strict sweep with the OS in dark mode (light is the test above).
+test('AC-1 strict axe and no horizontal scroll on every route in dark at 360 px', () => visitRoutes((page, route) => clean(page, `${route} (dark)`), { width: 360, scheme: 'dark' }));
