@@ -616,3 +616,45 @@ test('CLAIM-7-S8 policy screen: load, validate, save once, access, a11y at 360 p
   await emp.getByRole('alert').getByText('Access denied').waitFor();
   assert.equal(await emp.locator('form').count(), 0);
 });
+
+test('CLAIM-7-S9 export screen: download, range validity, failure, access, a11y at 360 px', async () => {
+  const page = await phone();
+  await page.goto(WEB + '/sign-in');
+  await page.fill('#email', 'finance@claimflow.test');
+  await page.fill('#password', PW);
+  await page.press('#password', 'Enter');
+  await page.getByRole('heading', { name: 'My claims' }).waitFor();
+  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Export' }).click();
+  await page.getByRole('heading', { name: 'Export paid claims', level: 1 }).waitFor();
+  await page.getByLabel('From').waitFor();
+  assert.equal(await page.evaluate(() => document.activeElement?.tagName), 'H1');
+  await clean(page, '/export', true);
+
+  const btn = page.getByRole('button', { name: 'Download CSV' });
+  assert.ok(await btn.isDisabled());
+  await page.getByLabel('From').fill('2026-03-15');
+  assert.ok(await btn.isDisabled());
+  await page.getByLabel('To').fill('2026-03-01');
+  assert.ok(await btn.isDisabled());
+  await page.getByLabel('To').fill('2026-03-15');
+  assert.ok(await btn.isEnabled());
+  await page.getByLabel('From').fill('2026-03-01');
+  const [dl] = await Promise.all([page.waitForEvent('download'), btn.click()]);
+  assert.equal(dl.suggestedFilename(), 'paid-claims-2026-03-01-to-2026-03-15.csv');
+
+  await page.route('**/api/exports/paid-claims.csv?*', (r) => r.fulfill({ status: 422, contentType: 'application/json', body: JSON.stringify({ error: 'invalid_input', reason: 'Bad range' }) }));
+  await btn.click();
+  await page.getByRole('alert').getByText('Bad range').waitFor();
+  assert.ok(await btn.isEnabled());
+
+  const emp = await phone();
+  await emp.goto(WEB + '/sign-in');
+  await emp.fill('#email', 'employee@claimflow.test');
+  await emp.fill('#password', PW);
+  await emp.press('#password', 'Enter');
+  await emp.getByRole('heading', { name: 'My claims' }).waitFor();
+  assert.equal(await emp.getByRole('link', { name: 'Export' }).count(), 0);
+  await emp.goto(`${WEB}/export`);
+  await emp.getByRole('alert').getByText('Access denied').waitFor();
+  assert.equal(await emp.locator('form').count(), 0);
+});

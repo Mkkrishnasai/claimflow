@@ -11,6 +11,7 @@ import ClaimDetail from './screens/ClaimDetail';
 import Approvals from './screens/Approvals';
 import Payments from './screens/Payments';
 import PolicySettings from './screens/PolicySettings';
+import ExportClaims from './screens/ExportClaims';
 
 export const homeFor = (u: SessionUser) => (u.role === 'admin' ? '/users' : '/claims');
 
@@ -49,10 +50,10 @@ export default function App() {
   return (
     <main className="wide">
       <nav aria-label="Main">
-        <a href="/claims">My claims</a> {user.role === 'manager' && <><a href="/approvals">Approvals</a> </>}{user.role === 'finance' && <><a href="/payments">Payments</a> <a href="/policy">Policy</a> </>}<a href={`/users/${user.id}`}>My account</a>
+        <a href="/claims">My claims</a> {user.role === 'manager' && <><a href="/approvals">Approvals</a> </>}{user.role === 'finance' && <><a href="/payments">Payments</a> <a href="/policy">Policy</a> <a href="/export">Export</a> </>}<a href={`/users/${user.id}`}>My account</a>
         <button type="button" onClick={signOut}>Sign out</button>
       </nav>
-      {path === '/claims' ? <ClaimsList /> : path === '/approvals' ? <Approvals /> : path === '/payments' ? <Payments /> : path === '/policy' ? <PolicySettings /> : pay ? <ClaimDetail key={path} id={pay[1]} viewer={user} go={go} back="/payments" /> : review ? <ClaimDetail key={path} id={review[1]} viewer={user} go={go} back="/approvals" /> : edit ? <ClaimEditor key={path} id={edit[1]} go={go} /> : claim && claim[1] !== 'new' ? <ClaimDetail key={path} id={claim[1]} viewer={user} go={go} /> : path === '/users' ? <UsersList /> : detail ? <UserDetail key={detail[1]} id={detail[1]} viewer={user} /> : <p role="alert">Page not found.</p>}
+      {path === '/claims' ? <ClaimsList /> : path === '/approvals' ? <Approvals /> : path === '/payments' ? <Payments /> : path === '/policy' ? <PolicySettings /> : path === '/export' ? <ExportClaims /> : pay ? <ClaimDetail key={path} id={pay[1]} viewer={user} go={go} back="/payments" /> : review ? <ClaimDetail key={path} id={review[1]} viewer={user} go={go} back="/approvals" /> : edit ? <ClaimEditor key={path} id={edit[1]} go={go} /> : claim && claim[1] !== 'new' ? <ClaimDetail key={path} id={claim[1]} viewer={user} go={go} /> : path === '/users' ? <UsersList /> : detail ? <UserDetail key={detail[1]} id={detail[1]} viewer={user} /> : <p role="alert">Page not found.</p>}
     </main>
   );
 }
