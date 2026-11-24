@@ -10,9 +10,14 @@ import { createLogger } from '../../api/src/logger.js';
 const PW = 'correct horse battery';
 const prisma = new PrismaClient();
 let srv: Server, base: string;
+const GUARDS = ['claim_event_no_delete', 'claim_paid_no_delete', 'line_paid_del', 'receipt_paid_del']; // paid claims and history are undeletable by trigger
 const wipe = async () => {
-  await prisma.claimLine.deleteMany(); await prisma.claim.deleteMany(); await prisma.session.deleteMany();
-  await prisma.user.updateMany({ data: { managerId: null } }); await prisma.user.deleteMany();
+  const g = await prisma.$queryRawUnsafe<{ name: string; sql: string }[]>(`SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND name IN (${GUARDS.map((n) => `'${n}'`).join(',')})`);
+  for (const t of g) await prisma.$executeRawUnsafe(`DROP TRIGGER "${t.name}"`);
+  try {
+    await prisma.claimEvent.deleteMany(); await prisma.claimLine.deleteMany(); await prisma.claim.deleteMany(); await prisma.session.deleteMany();
+    await prisma.user.updateMany({ data: { managerId: null } }); await prisma.user.deleteMany();
+  } finally { for (const t of g) await prisma.$executeRawUnsafe(t.sql); }
 };
 
 before(async () => {
@@ -55,4 +60,25 @@ test('NFR-PERF-1 GET /api/payments default page p95 under 1000 ms over 20 runs; 
   }
   times.sort((a, b) => a - b);
   assert.ok(times[Math.floor(times.length * 0.95)] < 1000);
+});
+
+test('NFR-PERF-1 POST /api/claims/:id/pay p95 under 500 ms over 20 distinct claims', async () => {
+  const pre = await fetch(`${base}/api/auth/csrf`);
+  const token = ((await pre.json()) as { csrfToken: string }).csrfToken;
+  const r = await fetch(`${base}/api/auth/sign-in`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-csrf-token': token, cookie: pre.headers.getSetCookie()[0].split(';')[0] },
+    body: JSON.stringify({ email: 'fin@claimflow.test', password: PW }),
+  });
+  const cookie = r.headers.getSetCookie().find((c) => c.startsWith('sid='))!.split(';')[0];
+  const csrf = ((await r.json()) as { csrfToken: string }).csrfToken;
+  const times: number[] = [];
+  for (let i = 1; i <= 20; i++) {
+    const t = performance.now();
+    const res = await fetch(`${base}/api/claims/c${i}/pay`, { method: 'POST', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ paymentDate: '2026-01-15', reference: `INV-${i}` }) });
+    assert.equal(res.status, 200);
+    times.push(performance.now() - t);
+  }
+  times.sort((a, b) => a - b);
+  assert.ok(times[Math.floor(times.length * 0.95)] < 500);
 });

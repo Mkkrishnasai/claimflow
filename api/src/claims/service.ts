@@ -4,7 +4,7 @@ import { managerChain, requireClaimant, requireEditable, requireReadable } from 
 import type { ReceiptStore } from './receipt-storage.js';
 import { withWrite, type Clock, type Tx } from '../db.js';
 import { moveClaim } from './status.js';
-import { canReadClaim } from '../auth/authz.js';
+import { canReadClaim, requireFinance } from '../auth/authz.js';
 import { nearestActiveAbove } from '../users/service.js';
 import { checkActor, decideApproval, rejectAction } from './approval.js';
 import { checkSubmit, pickDuplicates, SubmitRefused, utcToday, type Hit } from './policy.js';
@@ -42,7 +42,7 @@ export function parseLine(raw: unknown, categories: ReadonlySet<string>) {
 type LineRow = { id: string; position: number; date: string; categoryCode: string; amountCents: number; description: string; justification: string | null; limitCents: number | null; duplicateClaimId?: string | null; duplicateBasis?: string | null; receipts?: ReceiptRow[] };
 type ReceiptRow = { id: string; mime: string; sizeBytes: number; originalName: string | null; uploadedAt: Date };
 type EventRow = { seq: number; action: string; fromStatus: string; toStatus: string; reason: string | null; at: Date; actor: { id: string; name: string } };
-type ClaimRow = { id: string; claimantId: string; title: string; purpose: string; status: string; approverId: string | null; claimant?: { id: string; name: string }; createdAt: Date; updatedAt: Date; submittedAt: Date | null; lines: LineRow[]; events?: EventRow[] };
+type ClaimRow = { id: string; claimantId: string; title: string; purpose: string; status: string; approverId: string | null; claimant?: { id: string; name: string }; createdAt: Date; updatedAt: Date; submittedAt: Date | null; paymentDate?: string | null; paymentReference?: string | null; lines: LineRow[]; events?: EventRow[] };
 
 type FlagLine = { amountCents: number; categoryCode: string; limitCents: number | null; duplicateClaimId?: string | null; duplicateBasis?: string | null };
 export const lineFlags = (l: FlagLine, limits: ReadonlyMap<string, number>) => ({
@@ -56,7 +56,7 @@ export function toClaimJson(c: ClaimRow, limits: ReadonlyMap<string, number>) {
     limitCents: l.limitCents, ...lineFlags(l, limits), receipts: (l.receipts ?? []).map((r) => ({ id: r.id, mime: r.mime, sizeBytes: r.sizeBytes, originalName: r.originalName, uploadedAt: r.uploadedAt })),
   }));
   const { id, claimantId, title, purpose, status, approverId, createdAt, updatedAt, submittedAt } = c;
-  return { id, claimantId, claimant: c.claimant ? { id: c.claimant.id, name: c.claimant.name } : undefined, title, purpose, status, approverId, totalCents: lines.reduce((s, l) => s + l.amountCents, 0), lines, history: [...(c.events ?? [])].sort((a, b) => a.seq - b.seq).map((e) => ({ seq: e.seq, action: e.action, fromStatus: e.fromStatus, toStatus: e.toStatus, reason: e.reason, at: e.at, actor: { id: e.actor.id, name: e.actor.name } })), createdAt, updatedAt, submittedAt };
+  return { id, claimantId, claimant: c.claimant ? { id: c.claimant.id, name: c.claimant.name } : undefined, title, purpose, status, approverId, totalCents: lines.reduce((s, l) => s + l.amountCents, 0), lines, history: [...(c.events ?? [])].sort((a, b) => a.seq - b.seq).map((e) => ({ seq: e.seq, action: e.action, fromStatus: e.fromStatus, toStatus: e.toStatus, reason: e.reason, at: e.at, actor: { id: e.actor.id, name: e.actor.name } })), createdAt, updatedAt, submittedAt, payment: c.paymentDate && c.paymentReference ? { date: c.paymentDate, reference: c.paymentReference } : null };
 }
 
 // E-19
@@ -368,5 +368,24 @@ export const rejectClaim = (d: ClaimDeps, user: User, id: string, body: Record<s
   if (reason && reason.length > 500) throw bad('reason must be at most 500 characters');
   const now = d.clock();
   const ev = await moveClaim(tx, { claimId: id, action, actorId: me, reason, now, set: { updatedAt: now }, beforeAppend: d.beforeAppend });
+  return { claim: await reload(tx, id), ev };
+});
+
+// E-37 (FR-2). Order: 404, 403 finance, 409 status, then 422 input; every check precedes the one moveClaim. Only paymentDate and reference are read.
+async function loadForPayment(tx: Tx, user: User, id: string) {
+  const c = await tx.claim.findUnique({ where: { id }, select: { id: true, status: true } });
+  if (!c) throw new HttpError(404, 'not_found');
+  requireFinance(user);
+  if (c.status !== 'ready_to_pay') throw new HttpError(409, 'invalid_transition'); // S4 adds claim_paid, self_payment, approval check
+  return c;
+}
+
+export const payClaim = (d: ClaimDeps, user: User, id: string, body: Record<string, unknown>) => withWrite(d.prisma, async (tx) => {
+  await loadForPayment(tx, user, id);
+  const now = d.clock();
+  const paymentDate = validDate(body.paymentDate);
+  if (paymentDate > utcToday(now)) throw bad('date must not be in the future');
+  const paymentReference = text(body.reference, 'reference', 1, 100);
+  const ev = await moveClaim(tx, { claimId: id, action: 'pay', actorId: user!.id, now, set: { updatedAt: now, paymentDate, paymentReference }, beforeAppend: d.beforeAppend });
   return { claim: await reload(tx, id), ev };
 });
